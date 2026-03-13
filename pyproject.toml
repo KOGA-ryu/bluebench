@@ -1,0 +1,12 @@
+[project]
+name = "bluebench"
+version = "0.1.0"
+description = "Project skeleton for Blue Bench."
+requires-python = ">=3.11"
+dependencies = [
+    "pyside6>=6.10,<7",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

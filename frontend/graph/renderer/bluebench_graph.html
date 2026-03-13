@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blue Bench Graph</title>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="./d3.v7.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      background: #eef3fb;
+      color: #10243e;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0b0b0e;
+      overflow: hidden;
+    }
+
+    .frame {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100vh;
+      padding: 18px;
+      gap: 14px;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 18px;
+      border: 1px solid rgba(134, 157, 196, 0.55);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 18px 40px rgba(59, 90, 138, 0.08);
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .header p {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: #49617f;
+    }
+
+    .badge {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #10243e;
+      color: white;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .canvas {
+      position: relative;
+      border: 1px solid rgba(134, 157, 196, 0.55);
+      border-radius: 20px;
+      overflow: hidden;
+      background: rgba(18, 18, 24, 0.96);
+      box-shadow: 0 22px 50px rgba(59, 90, 138, 0.12);
+    }
+
+    .legend {
+      position: absolute;
+      left: 18px;
+      bottom: 18px;
+      z-index: 2;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: rgba(16, 36, 62, 0.88);
+      color: #f3f7ff;
+      font-size: 12px;
+    }
+
+    .legend strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .link {
+      stroke: #2a2a33;
+      stroke-width: 2;
+    }
+
+    .node {
+      cursor: grab;
+    }
+
+    .node circle {
+      stroke: rgba(255, 255, 255, 0.95);
+      stroke-width: 3;
+    }
+
+    .node text {
+      font-size: 12px;
+      font-weight: 600;
+      fill: #e7ebf5;
+      pointer-events: none;
+    }
+
+    .node--expanded circle {
+      stroke-width: 5;
+      filter: drop-shadow(0 0 10px rgba(16, 36, 62, 0.35));
+    }
+
+    .node--selected circle {
+      stroke: #b56cff;
+      stroke-width: 6;
+      filter: drop-shadow(0 0 12px rgba(181, 108, 255, 0.48));
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <div class="header">
+      <div>
+        <h1>Blueprint Graph Preview</h1>
+        <p>Dynamic graph data loaded from the Qt backend over WebChannel.</p>
+      </div>
+      <div class="badge">drag + zoom</div>
+    </div>
+    <div class="canvas">
+      <div class="legend">
+        <strong>Blue Bench</strong>
+        Drag nodes to reposition.
+        Scroll or pinch to zoom.
+      </div>
+      <svg id="graph"></svg>
+    </div>
+  </div>
+
+  <script>
+    const svg = d3.select("#graph");
+    const canvas = document.querySelector(".canvas");
+    const nodePalette = ["#1d4ed8", "#0f766e", "#7c3aed", "#d97706", "#dc2626", "#2563eb"];
+    const expandedNodes = new Set();
+    const layoutMode = "horizontal";
+    let currentTransform = d3.zoomIdentity;
+    let selectedNodeId = null;
+    let currentGraphData = { nodes: [], edges: [] };
+    let zoomBehavior = null;
+
+    function enrichNodes(nodes) {
+      return nodes.map((node, index) => ({
+        ...node,
+        label: node.label || node.name || node.id,
+        color: node.color || nodePalette[index % nodePalette.length],
+        radius: node.radius || (index === 0 ? 30 : 24)
+      }));
+    }
+
+    function updateGraph(data) {
+      expandedNodes.clear();
+      selectedNodeId = null;
+      currentGraphData = {
+        nodes: enrichNodes(data.nodes || []),
+        edges: (data.edges || []).map((edge) => ({ ...edge }))
+      };
+      render();
+    }
+
+    function getNodeRadius(node, index) {
+      if (node.radius) {
+        return node.radius;
+      }
+
+      if (node.type === "subsystem") {
+        return 30;
+      }
+
+      if (node.type === "module") {
+        return 24;
+      }
+
+      return 18;
+    }
+
+    function getChildrenByParent(nodes) {
+      const childrenByParent = new Map();
+
+      for (const node of nodes) {
+        if (!node.parent) {
+          continue;
+        }
+
+        if (!childrenByParent.has(node.parent)) {
+          childrenByParent.set(node.parent, []);
+        }
+
+        childrenByParent.get(node.parent).push(node);
+      }
+
+      return childrenByParent;
+    }
+
+    function getVisibleGraphData() {
+      const allNodes = currentGraphData.nodes.map((node, index) => ({
+        ...node,
+        radius: getNodeRadius(node, index)
+      }));
+      const childrenByParent = getChildrenByParent(allNodes);
+      const nodeIds = new Set(allNodes.map((node) => node.id));
+      const visibleNodes = allNodes.filter((node) => {
+        if (node.type === "subsystem") {
+          return true;
+        }
+
+        if ((node.type === "module") && node.parent) {
+          if (!nodeIds.has(node.parent)) {
+            return true;
+          }
+          return expandedNodes.has(node.parent);
+        }
+
+        if ((node.type === "class" || node.type === "function") && node.parent) {
+          return expandedNodes.has(node.parent);
+        }
+
+        return false;
+      }).map((node) => ({
+        ...node,
+        hasChildren: childrenByParent.has(node.id),
+        isExpanded: expandedNodes.has(node.id)
+      }));
+
+      const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+      const visibleEdges = currentGraphData.edges
+        .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+        .map((edge) => ({ ...edge }));
+
+      return { nodes: visibleNodes, edges: visibleEdges };
+    }
+
+    function getEdgeEndpointId(endpoint) {
+      if (typeof endpoint === "object" && endpoint !== null) {
+        return endpoint.id;
+      }
+
+      return endpoint;
+    }
+
+    function layoutHorizontal(nodes, canvasWidth, canvasHeight) {
+      const spacing = 220;
+      const startX = 140;
+      const centerY = canvasHeight / 2;
+
+      nodes.forEach((node, index) => {
+        node.x = startX + (index * spacing);
+        node.y = centerY;
+      });
+    }
+
+    function layoutVertical(nodes, canvasWidth, canvasHeight) {
+      const spacing = 160;
+      const centerX = canvasWidth / 2;
+      const startY = 120;
+
+      nodes.forEach((node, index) => {
+        node.x = centerX;
+        node.y = startY + (index * spacing);
+      });
+    }
+
+    function layoutRadial(nodes, canvasWidth, canvasHeight) {
+      const centerX = canvasWidth / 2;
+      const centerY = canvasHeight / 2;
+      const radius = Math.min(canvasWidth, canvasHeight) * 0.3;
+
+      if (!nodes.length) {
+        return;
+      }
+
+      nodes[0].x = centerX;
+      nodes[0].y = centerY;
+
+      const orbitNodes = nodes.slice(1);
+      orbitNodes.forEach((node, index) => {
+        const angle = (index / Math.max(orbitNodes.length, 1)) * Math.PI * 2;
+        node.x = centerX + (radius * Math.cos(angle));
+        node.y = centerY + (radius * Math.sin(angle));
+      });
+    }
+
+    function layoutGrid(nodes, canvasWidth, canvasHeight) {
+      const columns = 4;
+      const horizontalSpacing = 200;
+      const verticalSpacing = 160;
+      const startX = 140;
+      const startY = 120;
+
+      nodes.forEach((node, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        node.x = startX + (column * horizontalSpacing);
+        node.y = startY + (row * verticalSpacing);
+      });
+    }
+
+    function applyLayout(mode, nodes, canvasWidth, canvasHeight) {
+      if (mode === "vertical") {
+        layoutVertical(nodes, canvasWidth, canvasHeight);
+        return;
+      }
+
+      if (mode === "radial") {
+        layoutRadial(nodes, canvasWidth, canvasHeight);
+        return;
+      }
+
+      if (mode === "grid") {
+        layoutGrid(nodes, canvasWidth, canvasHeight);
+        return;
+      }
+
+      layoutHorizontal(nodes, canvasWidth, canvasHeight);
+    }
+
+    function render() {
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      const { nodes, edges } = getVisibleGraphData();
+      const connectedNodeIds = new Set();
+
+      if (selectedNodeId !== null) {
+        for (const edge of edges) {
+          const sourceId = getEdgeEndpointId(edge.source);
+          const targetId = getEdgeEndpointId(edge.target);
+          if (sourceId === selectedNodeId || targetId === selectedNodeId) {
+            connectedNodeIds.add(sourceId);
+            connectedNodeIds.add(targetId);
+          }
+        }
+      }
+
+      svg.selectAll("*").remove();
+      svg.attr("viewBox", `0 0 ${width} ${height}`);
+
+      if (!nodes.length) {
+        svg.append("text")
+          .attr("x", width / 2)
+          .attr("y", height / 2)
+          .attr("text-anchor", "middle")
+          .attr("fill", "#49617f")
+          .style("font-size", "14px")
+          .text("Waiting for graph data...");
+        return;
+      }
+
+      const root = svg.append("g");
+
+      if (!zoomBehavior) {
+        zoomBehavior = d3.zoom()
+          .scaleExtent([0.5, 2.5])
+          .on("zoom", (event) => {
+            currentTransform = event.transform;
+            root.attr("transform", currentTransform);
+          });
+      } else {
+        zoomBehavior.on("zoom", (event) => {
+          currentTransform = event.transform;
+          root.attr("transform", currentTransform);
+        });
+      }
+
+      svg.call(zoomBehavior);
+      applyLayout(layoutMode, nodes, width, height);
+      const nodeById = new Map(nodes.map((node) => [node.id, node]));
+      const positionedEdges = edges.map((edge) => ({
+        ...edge,
+        sourceNode: nodeById.get(getEdgeEndpointId(edge.source)),
+        targetNode: nodeById.get(getEdgeEndpointId(edge.target))
+      }));
+
+      const link = root.append("g")
+        .selectAll("line")
+        .data(positionedEdges.filter((edge) => edge.sourceNode && edge.targetNode))
+        .enter()
+        .append("line")
+        .attr("class", "link")
+        .attr("stroke", (d) => {
+          const sourceId = getEdgeEndpointId(d.source);
+          const targetId = getEdgeEndpointId(d.target);
+          if (selectedNodeId === null) {
+            return "#2a2a33";
+          }
+          if (sourceId === selectedNodeId || targetId === selectedNodeId) {
+            return "#b56cff";
+          }
+          return "#2a2a33";
+        })
+        .attr("stroke-width", (d) => {
+          const sourceId = getEdgeEndpointId(d.source);
+          const targetId = getEdgeEndpointId(d.target);
+          if (selectedNodeId !== null && (sourceId === selectedNodeId || targetId === selectedNodeId)) {
+            return 4;
+          }
+          return 2;
+        })
+        .attr("opacity", (d) => {
+          const sourceId = getEdgeEndpointId(d.source);
+          const targetId = getEdgeEndpointId(d.target);
+          if (selectedNodeId === null) {
+            return 1;
+          }
+          if (sourceId === selectedNodeId || targetId === selectedNodeId) {
+            return 1;
+          }
+          return 0.2;
+        });
+
+      const node = root.append("g")
+        .selectAll("g")
+        .data(nodes)
+        .enter()
+        .append("g")
+        .attr("class", "node")
+        .classed("node--expanded", (d) => d.isExpanded)
+        .classed("node--selected", (d) => d.id === selectedNodeId)
+        .attr("opacity", (d) => {
+          if (selectedNodeId === null) {
+            return 1;
+          }
+          if (d.id === selectedNodeId || connectedNodeIds.has(d.id)) {
+            return 1;
+          }
+          return 0.25;
+        })
+        .on("click", (event, d) => {
+          if (event.shiftKey) {
+            selectedNodeId = d.id;
+            if (window.graphBridge && typeof window.graphBridge.nodeSelected === "function") {
+              window.graphBridge.nodeSelected(d.id);
+            }
+            render();
+            return;
+          }
+
+          if (!d.hasChildren) {
+            return;
+          }
+
+          if (expandedNodes.has(d.id)) {
+            expandedNodes.delete(d.id);
+          } else {
+            expandedNodes.add(d.id);
+          }
+
+          render();
+        });
+
+      node.append("circle")
+        .attr("r", (d) => d.radius)
+        .attr("fill", (d) => d.color);
+
+      node.append("text")
+        .attr("text-anchor", "middle")
+        .attr("dy", 4)
+        .text((d) => d.label);
+
+      link
+        .attr("x1", (d) => d.sourceNode.x)
+        .attr("y1", (d) => d.sourceNode.y)
+        .attr("x2", (d) => d.targetNode.x)
+        .attr("y2", (d) => d.targetNode.y);
+
+      node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+      root.attr("transform", currentTransform);
+      svg.call(zoomBehavior.transform, currentTransform);
+    }
+
+    function initializeBridge() {
+      if (!window.qt || !window.qt.webChannelTransport) {
+        render();
+        return;
+      }
+
+      new QWebChannel(window.qt.webChannelTransport, function(channel) {
+        window.graphBridge = channel.objects.graphBridge;
+        window.graphBridge.sendGraph(function(data) {
+          updateGraph(data);
+        });
+      });
+    }
+
+    render();
+    initializeBridge();
+    window.addEventListener("resize", () => render());
+  </script>
+</body>
+</html>
