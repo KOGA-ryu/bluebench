@@ -100,7 +100,7 @@
     let focusNodeId = null;
     const focusRadius = 1;
     const focusFadeMode = true;
-    let currentGraphData = { nodes: [], edges: [] };
+    let currentGraphData = { nodes: [], edges: [], viewMode: "module_view", totalCompute: 0 };
     let zoomBehavior = null;
 
     function getMarkerColor(markerType) {
@@ -121,6 +121,22 @@
       }
 
       return "#d8d8df";
+    }
+
+    function getComputeHaloColor(score) {
+      if (typeof score !== "number") {
+        return null;
+      }
+
+      if (score <= 3) {
+        return "rgba(0,255,120,0.25)";
+      }
+
+      if (score <= 7) {
+        return "rgba(255,200,0,0.25)";
+      }
+
+      return "rgba(255,80,80,0.25)";
     }
 
     function getNodeColor(node) {
@@ -167,7 +183,9 @@
       focusNodeId = null;
       currentGraphData = {
         nodes: enrichNodes(data.nodes || []),
-        edges: (data.edges || []).map((edge) => ({ ...edge }))
+        edges: (data.edges || []).map((edge) => ({ ...edge })),
+        viewMode: data.view_mode || "module_view",
+        totalCompute: data.total_compute || 0
       };
       render();
     }
@@ -181,6 +199,20 @@
       focusNodeId = nodeId;
       selectedNodeId = nodeId;
       render();
+    }
+
+    function traceCallPath(nodeId) {
+      if (!window.graphBridge || typeof window.graphBridge.traceCallPath !== "function") {
+        return;
+      }
+
+      window.graphBridge.traceCallPath(nodeId, function(data) {
+        layoutMode = "horizontal";
+        selectedNodeId = nodeId;
+        focusNodeId = null;
+        currentTransform = d3.zoomIdentity;
+        updateGraph(data || { nodes: [], edges: [], view_mode: "call_path", total_compute: 0 });
+      });
     }
 
     function getNodeRadius(node, index) {
@@ -222,6 +254,17 @@
     }
 
     function getVisibleGraphData() {
+      if (currentGraphData.viewMode === "call_path") {
+        return {
+          nodes: currentGraphData.nodes.map((node) => ({
+            ...node,
+            hasChildren: false,
+            isExpanded: false
+          })),
+          edges: currentGraphData.edges.map((edge) => ({ ...edge }))
+        };
+      }
+
       const allNodes = currentGraphData.nodes.map((node, index) => ({
         ...node,
         radius: getNodeRadius(node, index)
@@ -260,6 +303,13 @@
     }
 
     function buildClusteredGraphData(nodes, edges) {
+      if (currentGraphData.viewMode === "call_path") {
+        return {
+          nodes: nodes.map((node) => ({ ...node })),
+          edges: edges.map((edge) => ({ ...edge }))
+        };
+      }
+
       const nodesById = new Map(nodes.map((node) => [node.id, node]));
       const childrenByParent = getChildrenByParent(nodes);
       const clusterMap = new Map();
@@ -505,6 +555,12 @@
         if (event.target === svg.node()) {
           focusNodeId = null;
           selectedNodeId = null;
+          if (currentGraphData.viewMode === "call_path" && window.graphBridge && typeof window.graphBridge.sendGraph === "function") {
+            window.graphBridge.sendGraph(function(data) {
+              updateGraph(data);
+            });
+            return;
+          }
           render();
         }
       });
@@ -538,7 +594,9 @@
 
       svg.call(zoomBehavior);
       const layoutNodes = [...nodes];
-      if (focusNodeId) {
+      if (currentGraphData.viewMode === "call_path") {
+        layoutNodes.sort((left, right) => (left.call_path_order || 0) - (right.call_path_order || 0));
+      } else if (focusNodeId) {
         layoutNodes.sort((left, right) => {
           if (left.id === focusNodeId) {
             return -1;
@@ -549,7 +607,12 @@
           return 0;
         });
       }
-      applyLayout(focusNodeId ? "radial" : layoutMode, layoutNodes, width, height);
+      applyLayout(
+        currentGraphData.viewMode === "call_path" ? "horizontal" : (focusNodeId ? "radial" : layoutMode),
+        layoutNodes,
+        width,
+        height
+      );
       const nodeById = new Map(layoutNodes.map((node) => [node.id, node]));
       const positionedEdges = edges.map((edge) => ({
         ...edge,
@@ -564,6 +627,9 @@
         .append("line")
         .attr("class", "link")
         .attr("stroke", (d) => {
+          if (currentGraphData.viewMode === "call_path") {
+            return "#b56cff";
+          }
           const sourceId = getEdgeEndpointId(d.source);
           const targetId = getEdgeEndpointId(d.target);
           if (selectedNodeId === null) {
@@ -575,6 +641,9 @@
           return "#2a2a33";
         })
         .attr("stroke-width", (d) => {
+          if (currentGraphData.viewMode === "call_path") {
+            return 4;
+          }
           const sourceId = getEdgeEndpointId(d.source);
           const targetId = getEdgeEndpointId(d.target);
           if (selectedNodeId !== null && (sourceId === selectedNodeId || targetId === selectedNodeId)) {
@@ -583,6 +652,9 @@
           return 2;
         })
         .attr("opacity", (d) => {
+          if (currentGraphData.viewMode === "call_path") {
+            return 1;
+          }
           const sourceId = getEdgeEndpointId(d.source);
           const targetId = getEdgeEndpointId(d.target);
           if (focusNodes && (!focusNodes.has(sourceId) || !focusNodes.has(targetId))) {
@@ -606,6 +678,9 @@
         .classed("node--expanded", (d) => d.isExpanded)
         .classed("node--selected", (d) => d.id === selectedNodeId)
         .attr("opacity", (d) => {
+          if (currentGraphData.viewMode === "call_path") {
+            return 1;
+          }
           if (focusNodes && !d.inFocus) {
             return focusFadeMode ? 0.15 : 0;
           }
@@ -630,6 +705,11 @@
 
           if (d.type !== "cluster" && window.graphBridge && typeof window.graphBridge.nodeSelected === "function") {
             window.graphBridge.nodeSelected(d.id);
+          }
+
+          if (d.type === "function" && currentGraphData.viewMode !== "call_path") {
+            traceCallPath(d.id);
+            return;
           }
 
           if (d.type === "cluster") {
@@ -665,6 +745,12 @@
             render();
           }
         });
+
+      node.append("circle")
+        .filter((d) => typeof d.compute_score === "number")
+        .attr("r", (d) => d.radius + 10)
+        .attr("fill", (d) => getComputeHaloColor(d.compute_score))
+        .attr("stroke", "none");
 
       node.append("circle")
         .attr("r", (d) => d.radius)

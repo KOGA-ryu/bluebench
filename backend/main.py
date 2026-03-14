@@ -233,29 +233,75 @@ class CodeViewer(QPlainTextEdit):
             return
 
     def highlightLine(self, line_number: int) -> None:
-        self.setExtraSelections([])
+        self.highlightNodeRegion(line_number, None, None, None)
 
-        if line_number < 1:
-            return
+    def highlightNodeRegion(
+        self,
+        line_number: int | None,
+        line_start: int | None,
+        line_end: int | None,
+        compute_score: int | None,
+    ) -> None:
+        selections: list[QTextEdit.ExtraSelection] = []
 
-        block = self.document().findBlockByLineNumber(line_number - 1)
-        if not block.isValid():
-            return
+        if (
+            isinstance(compute_score, int)
+            and compute_score >= 4
+            and isinstance(line_start, int)
+            and isinstance(line_end, int)
+            and line_start > 0
+            and line_end >= line_start
+        ):
+            region_color = QColor("#d4a017" if compute_score <= 7 else "#c1440e")
+            region_color.setAlpha(110)
+            selections.extend(self._buildRegionSelections(line_start, line_end, region_color))
 
-        cursor = QTextCursor(block)
-        self.setTextCursor(cursor)
-        self.centerCursor()
-        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+        if isinstance(line_number, int) and line_number > 0:
+            block = self.document().findBlockByLineNumber(line_number - 1)
+            if block.isValid():
+                cursor = QTextCursor(block)
+                self.setTextCursor(cursor)
+                self.centerCursor()
+                cursor.select(QTextCursor.SelectionType.LineUnderCursor)
 
-        line_highlight = QTextEdit.ExtraSelection()
-        line_highlight.cursor = cursor
-        line_highlight.format = QTextCharFormat()
-        line_highlight.format.setBackground(QColor("#2d1f45"))
-        line_highlight.format.setProperty(
-            QTextCharFormat.Property.FullWidthSelection,
-            True,
-        )
-        self.setExtraSelections([line_highlight])
+                line_highlight = QTextEdit.ExtraSelection()
+                line_highlight.cursor = cursor
+                line_highlight.format = QTextCharFormat()
+                line_highlight.format.setBackground(QColor("#2d1f45"))
+                line_highlight.format.setProperty(
+                    QTextCharFormat.Property.FullWidthSelection,
+                    True,
+                )
+                selections.append(line_highlight)
+
+        self.setExtraSelections(selections)
+
+    def _buildRegionSelections(
+        self,
+        line_start: int,
+        line_end: int,
+        color: QColor,
+    ) -> list[QTextEdit.ExtraSelection]:
+        selections: list[QTextEdit.ExtraSelection] = []
+        for line_number in range(line_start, line_end + 1):
+            block = self.document().findBlockByLineNumber(line_number - 1)
+            if not block.isValid():
+                continue
+
+            cursor = QTextCursor(block)
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = cursor
+            selection.format = QTextCharFormat()
+            selection.format.setBackground(color)
+            selection.format.setProperty(
+                QTextCharFormat.Property.FullWidthSelection,
+                True,
+            )
+            selections.append(selection)
+
+        return selections
 
     def setAnnotationContext(self, project_root: Path | None, file_path: str) -> None:
         self.project_root = project_root
@@ -488,14 +534,23 @@ class NodeInspectorWindow(QMainWindow):
         self.setWindowTitle(str(node.get("name") or self.node_id))
 
         self.header_title.setText(str(node.get("file_path") or node.get("name") or self.node_id))
-        self.header_meta.setText(
-            f"{node.get('type', '')} · {node.get('parent') or '-'} · line {node.get('line_number') or '-'}"
-        )
+        meta_parts = [
+            str(node.get("type", "")),
+            str(node.get("parent") or "-"),
+            f"line {node.get('line_number') or '-'}",
+        ]
+        call_path_total_compute = node.get("call_path_total_compute")
+        if isinstance(call_path_total_compute, int):
+            meta_parts.append(f"call path compute {call_path_total_compute}")
+        self.header_meta.setText(" · ".join(meta_parts))
 
         self._update_outline(node)
         self._update_code_viewer(
             str(node.get("file_path") or ""),
             node.get("line_number"),
+            node.get("line_start"),
+            node.get("line_end"),
+            node.get("compute_score"),
         )
 
     def _update_outline(self, node: dict) -> None:
@@ -537,7 +592,14 @@ class NodeInspectorWindow(QMainWindow):
         else:
             self.lock_button.setText("🔒 Lock Layout")
 
-    def _update_code_viewer(self, relative_file_path: str, line_number: object) -> None:
+    def _update_code_viewer(
+        self,
+        relative_file_path: str,
+        line_number: object,
+        line_start: object,
+        line_end: object,
+        compute_score: object,
+    ) -> None:
         if not relative_file_path:
             self.code_viewer.setAnnotationContext(self.project_path, "")
             self.code_viewer.setPlainText("")
@@ -557,7 +619,12 @@ class NodeInspectorWindow(QMainWindow):
         self.code_viewer.setExtraSelections([])
 
         if isinstance(line_number, int) and line_number > 0:
-            self.code_viewer.highlightLine(line_number)
+            self.code_viewer.highlightNodeRegion(
+                line_number,
+                line_start if isinstance(line_start, int) else None,
+                line_end if isinstance(line_end, int) else None,
+                compute_score if isinstance(compute_score, int) else None,
+            )
         else:
             cursor = self.code_viewer.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.Start)

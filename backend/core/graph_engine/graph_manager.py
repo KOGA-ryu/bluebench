@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+
 
 class GraphManager:
     def __init__(self) -> None:
@@ -9,6 +11,17 @@ class GraphManager:
         self._edge_index: set[tuple[str, str, str]] = set()
         self.node_metadata: dict[str, dict[str, object]] = {}
         self._seed_example_graph()
+
+    def _default_metadata(self) -> dict[str, object]:
+        return {
+            "markers": [],
+            "notes": "",
+            "compute_score": None,
+            "line_start": None,
+            "line_end": None,
+            "runtime_stats": None,
+            "experiments": [],
+        }
 
     def add_node(
         self,
@@ -37,16 +50,7 @@ class GraphManager:
 
         self.nodes.append(node)
         self._node_index[node_id] = node
-        self.node_metadata.setdefault(
-            node_id,
-            {
-                "markers": [],
-                "notes": "",
-                "compute_score": None,
-                "runtime_stats": None,
-                "experiments": [],
-            },
-        )
+        self.node_metadata.setdefault(node_id, self._default_metadata())
 
     def add_edge(self, source: str, target: str, edge_type: str) -> None:
         edge_key = (source, target, edge_type)
@@ -101,16 +105,7 @@ class GraphManager:
         if node_id not in self._node_index:
             return
 
-        metadata = self.node_metadata.setdefault(
-            node_id,
-            {
-                "markers": [],
-                "notes": "",
-                "compute_score": None,
-                "runtime_stats": None,
-                "experiments": [],
-            },
-        )
+        metadata = self.node_metadata.setdefault(node_id, self._default_metadata())
         markers = metadata.setdefault("markers", [])
         if isinstance(markers, list) and marker_type not in markers:
             markers.append(marker_type)
@@ -135,17 +130,13 @@ class GraphManager:
     def get_metadata(self, node_id: str) -> dict[str, object]:
         metadata = self.node_metadata.get(node_id)
         if metadata is None:
-            return {
-                "markers": [],
-                "notes": "",
-                "compute_score": None,
-                "runtime_stats": None,
-                "experiments": [],
-            }
+            return self._default_metadata()
         return {
             "markers": list(metadata.get("markers", [])) if isinstance(metadata.get("markers", []), list) else [],
             "notes": metadata.get("notes", ""),
             "compute_score": metadata.get("compute_score"),
+            "line_start": metadata.get("line_start"),
+            "line_end": metadata.get("line_end"),
             "runtime_stats": metadata.get("runtime_stats"),
             "experiments": list(metadata.get("experiments", [])) if isinstance(metadata.get("experiments", []), list) else [],
         }
@@ -153,16 +144,7 @@ class GraphManager:
     def set_metadata(self, node_id: str, key: str, value: object) -> None:
         if node_id not in self._node_index:
             return
-        metadata = self.node_metadata.setdefault(
-            node_id,
-            {
-                "markers": [],
-                "notes": "",
-                "compute_score": None,
-                "runtime_stats": None,
-                "experiments": [],
-            },
-        )
+        metadata = self.node_metadata.setdefault(node_id, self._default_metadata())
         metadata[key] = value
 
     def get_graph(self) -> dict[str, list[dict[str, object]]]:
@@ -198,7 +180,7 @@ class GraphManager:
                 visible_edge_keys.add(edge_key)
 
         visible_nodes = [
-            dict(self._node_index[node_id])
+            self.get_node(node_id)
             for node_id in visible_node_ids
             if node_id in self._node_index
         ]
@@ -214,6 +196,60 @@ class GraphManager:
                 key=lambda node: (str(node["type"]), str(node["name"]).lower()),
             ),
             "edges": visible_edges,
+        }
+
+    def trace_call_path(self, start_node_id: str, max_depth: int = 5) -> dict[str, object]:
+        if not self.has_node(start_node_id):
+            return {"nodes": [], "edges": [], "total_compute": 0, "view_mode": "call_path"}
+
+        visited_nodes: set[str] = set()
+        discovered_edges: list[dict[str, str]] = []
+        discovered_edge_keys: set[tuple[str, str, str]] = set()
+        ordered_nodes: list[dict[str, object]] = []
+        total_compute = 0
+        queue: deque[tuple[str, int]] = deque([(start_node_id, 0)])
+
+        while queue:
+            current_node_id, depth = queue.popleft()
+            if current_node_id in visited_nodes or depth > max_depth:
+                continue
+
+            current_node = self.get_node(current_node_id)
+            if current_node is None:
+                continue
+
+            visited_nodes.add(current_node_id)
+            current_node["call_path_order"] = len(ordered_nodes)
+            ordered_nodes.append(current_node)
+
+            compute_score = self.get_metadata(current_node_id).get("compute_score")
+            if isinstance(compute_score, int):
+                total_compute += compute_score
+
+            if depth == max_depth:
+                continue
+
+            for edge in self.edges:
+                if edge["type"] != "calls" or edge["source"] != current_node_id:
+                    continue
+
+                target_node_id = edge["target"]
+                if not self.has_node(target_node_id):
+                    continue
+
+                edge_key = (edge["source"], edge["target"], edge["type"])
+                if edge_key not in discovered_edge_keys:
+                    discovered_edge_keys.add(edge_key)
+                    discovered_edges.append(dict(edge))
+
+                if target_node_id not in visited_nodes:
+                    queue.append((target_node_id, depth + 1))
+
+        return {
+            "nodes": ordered_nodes,
+            "edges": discovered_edges,
+            "total_compute": total_compute,
+            "view_mode": "call_path",
         }
 
     def _seed_example_graph(self) -> None:

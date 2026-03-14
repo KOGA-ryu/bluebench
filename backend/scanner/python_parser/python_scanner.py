@@ -13,6 +13,22 @@ except ModuleNotFoundError:
 IGNORED_DIRECTORIES = {".git", "venv", "__pycache__", "node_modules"}
 
 
+def analyze_complexity(ast_node: ast.AST) -> int:
+    loops = 0
+    branches = 0
+    calls = 0
+
+    for node in ast.walk(ast_node):
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            loops += 1
+        elif isinstance(node, ast.If):
+            branches += 1
+        elif isinstance(node, ast.Call):
+            calls += 1
+
+    return (loops * 3) + (branches * 2) + calls
+
+
 class PythonRepoScanner:
     def __init__(self, graph_manager: GraphManager, repo_path: str | Path) -> None:
         self.graph_manager = graph_manager
@@ -137,6 +153,21 @@ class PythonRepoScanner:
                     parent=module_id,
                     file_path=module_id,
                     line_number=node.lineno,
+                )
+                self.graph_manager.set_metadata(
+                    function_id,
+                    "compute_score",
+                    analyze_complexity(node),
+                )
+                self.graph_manager.set_metadata(
+                    function_id,
+                    "line_start",
+                    node.lineno,
+                )
+                self.graph_manager.set_metadata(
+                    function_id,
+                    "line_end",
+                    getattr(node, "end_lineno", node.lineno),
                 )
                 self.graph_manager.add_edge(module_id, function_id, "contains")
                 self.function_name_index.setdefault(node.name, []).append(function_id)
