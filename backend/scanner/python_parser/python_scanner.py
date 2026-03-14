@@ -76,6 +76,8 @@ class PythonRepoScanner:
             file_path.stem,
             "module",
             parent=self.repository_node_id,
+            file_path=relative_path,
+            line_number=1,
         )
 
         self.module_map[module_name] = relative_path
@@ -121,6 +123,8 @@ class PythonRepoScanner:
                     node.name,
                     "class",
                     parent=module_id,
+                    file_path=module_id,
+                    line_number=node.lineno,
                 )
                 self.graph_manager.add_edge(module_id, class_id, "contains")
 
@@ -131,6 +135,8 @@ class PythonRepoScanner:
                     node.name,
                     "function",
                     parent=module_id,
+                    file_path=module_id,
+                    line_number=node.lineno,
                 )
                 self.graph_manager.add_edge(module_id, function_id, "contains")
                 self.function_name_index.setdefault(node.name, []).append(function_id)

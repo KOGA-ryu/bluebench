@@ -3,10 +3,11 @@ from __future__ import annotations
 
 class GraphManager:
     def __init__(self) -> None:
-        self.nodes: list[dict[str, str | None]] = []
+        self.nodes: list[dict[str, object]] = []
         self.edges: list[dict[str, str]] = []
-        self._node_index: dict[str, dict[str, str | None]] = {}
+        self._node_index: dict[str, dict[str, object]] = {}
         self._edge_index: set[tuple[str, str, str]] = set()
+        self.node_metadata: dict[str, dict[str, object]] = {}
         self._seed_example_graph()
 
     def add_node(
@@ -15,20 +16,37 @@ class GraphManager:
         name: str,
         node_type: str,
         parent: str | None = None,
+        file_path: str | None = None,
+        line_number: int | None = None,
     ) -> None:
-        node = {
+        existing = self._node_index.get(node_id)
+        existing_file_path = str(existing.get("file_path")) if existing is not None and existing.get("file_path") is not None else None
+        existing_line_number = int(existing.get("line_number")) if existing is not None and existing.get("line_number") is not None else None
+
+        node: dict[str, object] = {
             "id": node_id,
             "name": name,
             "type": node_type,
             "parent": parent,
+            "file_path": file_path if file_path is not None else existing_file_path,
+            "line_number": line_number if line_number is not None else existing_line_number,
         }
-        existing = self._node_index.get(node_id)
         if existing is not None:
             existing.update(node)
             return
 
         self.nodes.append(node)
         self._node_index[node_id] = node
+        self.node_metadata.setdefault(
+            node_id,
+            {
+                "markers": [],
+                "notes": "",
+                "compute_score": None,
+                "runtime_stats": None,
+                "experiments": [],
+            },
+        )
 
     def add_edge(self, source: str, target: str, edge_type: str) -> None:
         edge_key = (source, target, edge_type)
@@ -48,21 +66,24 @@ class GraphManager:
         self.edges.clear()
         self._node_index.clear()
         self._edge_index.clear()
+        self.node_metadata.clear()
 
     def has_node(self, node_id: str) -> bool:
         return node_id in self._node_index
 
-    def get_node(self, node_id: str) -> dict[str, str | None] | None:
+    def get_node(self, node_id: str) -> dict[str, object] | None:
         node = self._node_index.get(node_id)
         if node is None:
             return None
-        return dict(node)
+        merged = dict(node)
+        merged.update(self.get_metadata(node_id))
+        return merged
 
-    def list_modules(self) -> list[dict[str, str | None]]:
+    def list_modules(self) -> list[dict[str, object]]:
         modules = [dict(node) for node in self.nodes if node["type"] == "module"]
         return sorted(modules, key=lambda node: str(node["name"]).lower())
 
-    def get_code_modules(self) -> list[dict[str, str | None]]:
+    def get_code_modules(self) -> list[dict[str, object]]:
         code_module_ids = {
             edge["source"]
             for edge in self.edges
@@ -76,13 +97,81 @@ class GraphManager:
         ]
         return sorted(modules, key=lambda node: str(node["name"]).lower())
 
-    def get_graph(self) -> dict[str, list[dict[str, str | None]]]:
+    def add_marker(self, node_id: str, marker_type: str) -> None:
+        if node_id not in self._node_index:
+            return
+
+        metadata = self.node_metadata.setdefault(
+            node_id,
+            {
+                "markers": [],
+                "notes": "",
+                "compute_score": None,
+                "runtime_stats": None,
+                "experiments": [],
+            },
+        )
+        markers = metadata.setdefault("markers", [])
+        if isinstance(markers, list) and marker_type not in markers:
+            markers.append(marker_type)
+
+    def remove_marker(self, node_id: str, marker_type: str) -> None:
+        if node_id not in self._node_index:
+            return
+
+        markers = self.node_metadata.get(node_id, {}).get("markers", [])
+        if isinstance(markers, list) and marker_type in markers:
+            markers.remove(marker_type)
+
+    def get_markers(self, node_id: str) -> list[str]:
+        if node_id not in self._node_index:
+            return []
+
+        markers = self.node_metadata.get(node_id, {}).get("markers", [])
+        if not isinstance(markers, list):
+            return []
+        return list(markers)
+
+    def get_metadata(self, node_id: str) -> dict[str, object]:
+        metadata = self.node_metadata.get(node_id)
+        if metadata is None:
+            return {
+                "markers": [],
+                "notes": "",
+                "compute_score": None,
+                "runtime_stats": None,
+                "experiments": [],
+            }
+        return {
+            "markers": list(metadata.get("markers", [])) if isinstance(metadata.get("markers", []), list) else [],
+            "notes": metadata.get("notes", ""),
+            "compute_score": metadata.get("compute_score"),
+            "runtime_stats": metadata.get("runtime_stats"),
+            "experiments": list(metadata.get("experiments", [])) if isinstance(metadata.get("experiments", []), list) else [],
+        }
+
+    def set_metadata(self, node_id: str, key: str, value: object) -> None:
+        if node_id not in self._node_index:
+            return
+        metadata = self.node_metadata.setdefault(
+            node_id,
+            {
+                "markers": [],
+                "notes": "",
+                "compute_score": None,
+                "runtime_stats": None,
+                "experiments": [],
+            },
+        )
+        metadata[key] = value
+
+    def get_graph(self) -> dict[str, list[dict[str, object]]]:
         return {
             "nodes": [dict(node) for node in self.nodes],
             "edges": [dict(edge) for edge in self.edges],
         }
 
-    def get_module_view(self, module_id: str) -> dict[str, list[dict[str, str | None]]]:
+    def get_module_view(self, module_id: str) -> dict[str, list[dict[str, object]]]:
         module_node = self._node_index.get(module_id)
         if module_node is None or module_node["type"] != "module":
             return {"nodes": [], "edges": []}
