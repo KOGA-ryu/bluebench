@@ -3,802 +3,281 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Blue Bench Graph</title>
+  <title>Blue Bench Explorer</title>
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   <script src="./d3.v7.min.js"></script>
   <style>
     :root {
-      color-scheme: light;
-      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-      background: #eef3fb;
-      color: #10243e;
+      color-scheme: dark;
+      --canvas: #0c0a12;
+      --panel: #140f1d;
+      --panel-alt: #100c18;
+      --border: rgba(242, 233, 221, 0.14);
+      --text: #f4efe6;
+      --muted: #baae9d;
+      --shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+      --header-h: 28px;
+      --node-w: 236px;
+      --node-h: 120px;
+      --pad: 12px;
+      --button: #22182f;
+      --button-border: rgba(255, 255, 255, 0.09);
     }
 
     * {
       box-sizing: border-box;
     }
 
-    body {
+    html, body {
       margin: 0;
-      min-height: 100vh;
-      background: #000000;
+      width: 100%;
+      height: 100%;
       overflow: hidden;
+      background:
+        radial-gradient(circle at top left, rgba(138, 96, 53, 0.22), transparent 24%),
+        radial-gradient(circle at bottom right, rgba(29, 67, 107, 0.28), transparent 28%),
+        var(--canvas);
+      color: var(--text);
+      font-family: "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
     }
 
-    .frame {
-      height: 100vh;
-    }
-
-    .canvas {
+    .shell {
       position: relative;
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #000000;
     }
 
-    svg {
-      width: 100%;
-      height: 100%;
-      display: block;
-      background-color: #1a1026;
+    .empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #7e7265;
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
-    .link {
-      stroke: #2a2a33;
-      stroke-width: 2;
+    .viewport {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      overflow: hidden;
+    }
+
+    .frozen-pane {
+      position: relative;
+      width: calc(var(--node-w) + 24px);
+      min-width: calc(var(--node-w) + 24px);
+      border-right: 1px solid rgba(255, 255, 255, 0.05);
+      background:
+        linear-gradient(180deg, rgba(17, 12, 25, 0.98), rgba(9, 7, 14, 0.98));
+      overflow: hidden;
+      z-index: 2;
+    }
+
+    .scroll-pane {
+      position: relative;
+      flex: 1;
+      overflow: auto;
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 0, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        transparent;
+      background-size: 264px 100%;
+    }
+
+    .frozen-content,
+    .scroll-content {
+      position: relative;
+      min-height: 100%;
+    }
+
+    .status {
+      position: absolute;
+      right: 16px;
+      bottom: 12px;
+      z-index: 4;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      background: rgba(10, 8, 16, 0.88);
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
     .node {
-      cursor: grab;
+      position: absolute;
+      width: var(--node-w);
+      height: var(--node-h);
+      border: 1px solid var(--border);
+      border-radius: 0;
+      background: linear-gradient(180deg, rgba(22, 17, 31, 0.96), rgba(14, 11, 21, 0.96));
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      z-index: 5;
+      pointer-events: auto;
     }
 
-    .node circle {
-      stroke: rgba(255, 255, 255, 0.95);
-      stroke-width: 3;
+    .node.is-header-only .node-body {
+      display: none;
     }
 
-    .node text {
+    .node-header {
+      position: relative;
+      display: grid;
+      grid-template-columns: 28px 1fr 28px;
+      align-items: center;
+      gap: 8px;
+      height: var(--header-h);
+      padding: 0 6px;
+      background: rgba(6, 5, 10, 0.52);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      pointer-events: auto;
+    }
+
+    .header-strip {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+    }
+
+    .node-button {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid var(--button-border);
+      background: var(--button);
+      color: #f5e9d4;
       font-size: 12px;
-      font-weight: 600;
-      fill: #e7ebf5;
+      line-height: 1;
+      cursor: pointer;
+      position: relative;
+      z-index: 8;
+      pointer-events: auto;
+    }
+
+    .node-button:disabled {
+      opacity: 0.32;
+      cursor: default;
+    }
+
+    .node-title {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      cursor: default;
+    }
+
+    .node-title.is-openable {
+      cursor: pointer;
+    }
+
+    .node-body {
+      height: calc(var(--node-h) - var(--header-h));
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: linear-gradient(180deg, rgba(12, 10, 18, 0.9), rgba(17, 13, 25, 0.98));
+    }
+
+    .indicator-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .tier-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tier-dot {
+      width: 8px;
+      height: 8px;
+      flex: 0 0 8px;
+    }
+
+    .metadata-panel {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 8px;
+      background: rgba(7, 6, 12, 0.6);
+      font-size: 11px;
+      line-height: 1.45;
+      color: #e7dccf;
+    }
+
+    .metadata-panel::-webkit-scrollbar,
+    .scroll-pane::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    .metadata-panel::-webkit-scrollbar-thumb,
+    .scroll-pane::-webkit-scrollbar-thumb {
+      background: rgba(214, 182, 121, 0.2);
+    }
+
+    .load-more {
+      border: 1px solid var(--button-border);
+      background: rgba(34, 24, 47, 0.8);
+      color: var(--text);
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      padding: 6px 8px;
+      cursor: pointer;
+    }
+
+    .tooltip {
+      position: fixed;
+      z-index: 10;
+      display: none;
+      max-width: 280px;
+      padding: 6px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(8, 7, 11, 0.96);
+      color: #f8eedf;
+      font-size: 11px;
       pointer-events: none;
-    }
-
-    .node--expanded circle {
-      stroke-width: 5;
-      filter: drop-shadow(0 0 10px rgba(16, 36, 62, 0.35));
-    }
-
-    .node--selected circle {
-      stroke: #b56cff;
-      stroke-width: 6;
-      filter: drop-shadow(0 0 12px rgba(181, 108, 255, 0.48));
-    }
-
-    .marker-badge {
-      stroke: #0b0b0e;
-      stroke-width: 2;
+      box-shadow: var(--shadow);
     }
   </style>
 </head>
 <body>
-  <div class="frame">
-    <div class="canvas">
-      <svg id="graph"></svg>
+  <div class="shell">
+    <div class="viewport" id="viewport" hidden>
+      <div class="frozen-pane">
+        <div class="frozen-content" id="frozenContent"></div>
+      </div>
+      <div class="scroll-pane" id="scrollPane">
+        <div class="scroll-content" id="scrollContent"></div>
+      </div>
     </div>
+    <div class="empty" id="emptyState" hidden></div>
+    <div class="status" id="statusLabel" hidden></div>
+    <div class="tooltip" id="tooltip"></div>
   </div>
 
-  <script>
-    const svg = d3.select("#graph");
-    const canvas = document.querySelector(".canvas");
-    const expandedNodes = new Set();
-    const expandedClusters = new Set();
-    let layoutMode = "vertical";
-    let currentTransform = d3.zoomIdentity;
-    let selectedNodeId = null;
-    let focusNodeId = null;
-    const focusRadius = 1;
-    const focusFadeMode = true;
-    let currentGraphData = { nodes: [], edges: [], viewMode: "module_view", totalCompute: 0 };
-    let zoomBehavior = null;
-
-    function getMarkerColor(markerType) {
-      if (markerType === "performance") {
-        return "#ff5f5f";
-      }
-
-      if (markerType === "optimization") {
-        return "#ffd166";
-      }
-
-      if (markerType === "refactor") {
-        return "#5dade2";
-      }
-
-      if (markerType === "investigate") {
-        return "#9b5de5";
-      }
-
-      return "#d8d8df";
-    }
-
-    function getComputeHaloColor(score) {
-      if (typeof score !== "number") {
-        return null;
-      }
-
-      if (score <= 3) {
-        return "rgba(0,255,120,0.25)";
-      }
-
-      if (score <= 7) {
-        return "rgba(255,200,0,0.25)";
-      }
-
-      return "rgba(255,80,80,0.25)";
-    }
-
-    function getNodeColor(node) {
-      if (node.color) {
-        return node.color;
-      }
-
-      if (node.type === "subsystem") {
-        return "#1f2a44";
-      }
-
-      if (node.type === "module") {
-        return "#4a1f2d";
-      }
-
-      if (node.type === "function") {
-        return "#cfcfcf";
-      }
-
-      if (node.type === "class") {
-        return "#7f5af0";
-      }
-
-      if (node.type === "cluster") {
-        return "#3c2a5e";
-      }
-
-      return "#cfcfcf";
-    }
-
-    function enrichNodes(nodes) {
-      return nodes.map((node, index) => ({
-        ...node,
-        label: node.label || node.name || node.id,
-        color: getNodeColor(node),
-        radius: node.radius || (index === 0 ? 30 : 24)
-      }));
-    }
-
-    function updateGraph(data) {
-      expandedNodes.clear();
-      expandedClusters.clear();
-      selectedNodeId = null;
-      focusNodeId = null;
-      currentGraphData = {
-        nodes: enrichNodes(data.nodes || []),
-        edges: (data.edges || []).map((edge) => ({ ...edge })),
-        viewMode: data.view_mode || "module_view",
-        totalCompute: data.total_compute || 0
-      };
-      render();
-    }
-
-    function setLayout(mode) {
-      layoutMode = mode || "horizontal";
-      render();
-    }
-
-    function focusNode(nodeId) {
-      focusNodeId = nodeId;
-      selectedNodeId = nodeId;
-      render();
-    }
-
-    function traceCallPath(nodeId) {
-      if (!window.graphBridge || typeof window.graphBridge.traceCallPath !== "function") {
-        return;
-      }
-
-      window.graphBridge.traceCallPath(nodeId, function(data) {
-        layoutMode = "horizontal";
-        selectedNodeId = nodeId;
-        focusNodeId = null;
-        currentTransform = d3.zoomIdentity;
-        updateGraph(data || { nodes: [], edges: [], view_mode: "call_path", total_compute: 0 });
-      });
-    }
-
-    function getNodeRadius(node, index) {
-      if (node.radius) {
-        return node.radius;
-      }
-
-      if (node.type === "subsystem") {
-        return 30;
-      }
-
-      if (node.type === "module") {
-        return 24;
-      }
-
-      if (node.type === "cluster") {
-        return 28;
-      }
-
-      return 18;
-    }
-
-    function getChildrenByParent(nodes) {
-      const childrenByParent = new Map();
-
-      for (const node of nodes) {
-        if (!node.parent) {
-          continue;
-        }
-
-        if (!childrenByParent.has(node.parent)) {
-          childrenByParent.set(node.parent, []);
-        }
-
-        childrenByParent.get(node.parent).push(node);
-      }
-
-      return childrenByParent;
-    }
-
-    function getVisibleGraphData() {
-      if (currentGraphData.viewMode === "call_path") {
-        return {
-          nodes: currentGraphData.nodes.map((node) => ({
-            ...node,
-            hasChildren: false,
-            isExpanded: false
-          })),
-          edges: currentGraphData.edges.map((edge) => ({ ...edge }))
-        };
-      }
-
-      const allNodes = currentGraphData.nodes.map((node, index) => ({
-        ...node,
-        radius: getNodeRadius(node, index)
-      }));
-      const childrenByParent = getChildrenByParent(allNodes);
-      const nodeIds = new Set(allNodes.map((node) => node.id));
-      const visibleNodes = allNodes.filter((node) => {
-        if (node.type === "subsystem") {
-          return true;
-        }
-
-        if ((node.type === "module") && node.parent) {
-          if (!nodeIds.has(node.parent)) {
-            return true;
-          }
-          return expandedNodes.has(node.parent);
-        }
-
-        if ((node.type === "class" || node.type === "function") && node.parent) {
-          return expandedNodes.has(node.parent);
-        }
-
-        return false;
-      }).map((node) => ({
-        ...node,
-        hasChildren: childrenByParent.has(node.id),
-        isExpanded: expandedNodes.has(node.id)
-      }));
-
-      const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-      const visibleEdges = currentGraphData.edges
-        .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-        .map((edge) => ({ ...edge }));
-
-      return { nodes: visibleNodes, edges: visibleEdges };
-    }
-
-    function buildClusteredGraphData(nodes, edges) {
-      if (currentGraphData.viewMode === "call_path") {
-        return {
-          nodes: nodes.map((node) => ({ ...node })),
-          edges: edges.map((edge) => ({ ...edge }))
-        };
-      }
-
-      const nodesById = new Map(nodes.map((node) => [node.id, node]));
-      const childrenByParent = getChildrenByParent(nodes);
-      const clusterMap = new Map();
-      const clusteredNodes = [];
-
-      for (const node of nodes) {
-        const childNodes = childrenByParent.get(node.id) || [];
-        const clusterableChildren = childNodes.filter((child) =>
-          child.type === "module" || child.type === "class" || child.type === "function"
-        );
-
-        if (clusterableChildren.length > 3) {
-          const clusterId = `${node.id}::cluster`;
-          const clusterExpanded = expandedClusters.has(clusterId);
-
-          clusterMap.set(node.id, {
-            id: clusterId,
-            expanded: clusterExpanded,
-            childIds: new Set(clusterableChildren.map((child) => child.id)),
-          });
-
-          const remainingChildren = childNodes.filter((child) => !clusterMap.get(node.id).childIds.has(child.id));
-          node.hasChildren = true;
-          clusteredNodes.push(node);
-          clusteredNodes.push(
-            {
-              id: clusterId,
-              name: `functions (${clusterableChildren.length})`,
-              label: `functions (${clusterableChildren.length})`,
-              type: "cluster",
-              parent: node.id,
-              count: clusterableChildren.length,
-              color: "#3c2a5e",
-              radius: 28,
-              hasChildren: true,
-              isExpanded: clusterExpanded,
-              markers: [],
-            }
-          );
-          if (clusterExpanded) {
-            clusteredNodes.push(...clusterableChildren);
-          }
-          clusteredNodes.push(...remainingChildren);
-          continue;
-        }
-
-        clusteredNodes.push(node);
-      }
-
-      const clusteredNodeIds = new Set(clusteredNodes.map((node) => node.id));
-      const clusteredEdges = [];
-      const edgeIndex = new Set();
-
-      for (const edge of edges) {
-        let sourceId = getEdgeEndpointId(edge.source);
-        let targetId = getEdgeEndpointId(edge.target);
-
-        for (const [parentId, clusterInfo] of clusterMap.entries()) {
-          if (!clusterInfo.expanded && clusterInfo.childIds.has(sourceId)) {
-            sourceId = clusterInfo.id;
-          }
-          if (!clusterInfo.expanded && clusterInfo.childIds.has(targetId)) {
-            targetId = clusterInfo.id;
-          }
-        }
-
-        if (!clusteredNodeIds.has(sourceId) || !clusteredNodeIds.has(targetId) || sourceId === targetId) {
-          continue;
-        }
-
-        const edgeKey = `${sourceId}:${targetId}:${edge.type}`;
-        if (edgeIndex.has(edgeKey)) {
-          continue;
-        }
-
-        edgeIndex.add(edgeKey);
-        clusteredEdges.push({
-          ...edge,
-          source: sourceId,
-          target: targetId,
-        });
-      }
-
-      return { nodes: clusteredNodes, edges: clusteredEdges };
-    }
-
-    function getFocusNodes(nodeId, radius, edges) {
-      if (!nodeId) {
-        return new Set();
-      }
-
-      const visited = new Set([nodeId]);
-      let frontier = new Set([nodeId]);
-
-      for (let depth = 0; depth < radius; depth += 1) {
-        const nextFrontier = new Set();
-
-        for (const edge of edges) {
-          const sourceId = getEdgeEndpointId(edge.source);
-          const targetId = getEdgeEndpointId(edge.target);
-
-          if (frontier.has(sourceId) && !visited.has(targetId)) {
-            visited.add(targetId);
-            nextFrontier.add(targetId);
-          }
-
-          if (frontier.has(targetId) && !visited.has(sourceId)) {
-            visited.add(sourceId);
-            nextFrontier.add(sourceId);
-          }
-        }
-
-        frontier = nextFrontier;
-        if (!frontier.size) {
-          break;
-        }
-      }
-
-      return visited;
-    }
-
-    function getEdgeEndpointId(endpoint) {
-      if (typeof endpoint === "object" && endpoint !== null) {
-        return endpoint.id;
-      }
-
-      return endpoint;
-    }
-
-    function layoutHorizontal(nodes, canvasWidth, canvasHeight) {
-      const spacing = 220;
-      const startX = 140;
-      const centerY = canvasHeight / 2;
-
-      nodes.forEach((node, index) => {
-        node.x = startX + (index * spacing);
-        node.y = centerY;
-      });
-    }
-
-    function layoutVertical(nodes, canvasWidth, canvasHeight) {
-      const spacing = 160;
-      const centerX = canvasWidth / 2;
-      const startY = 120;
-
-      nodes.forEach((node, index) => {
-        node.x = centerX;
-        node.y = startY + (index * spacing);
-      });
-    }
-
-    function layoutRadial(nodes, canvasWidth, canvasHeight) {
-      const centerX = canvasWidth / 2;
-      const centerY = canvasHeight / 2;
-      const radius = Math.min(canvasWidth, canvasHeight) * 0.3;
-
-      if (!nodes.length) {
-        return;
-      }
-
-      nodes[0].x = centerX;
-      nodes[0].y = centerY;
-
-      const orbitNodes = nodes.slice(1);
-      orbitNodes.forEach((node, index) => {
-        const angle = (index / Math.max(orbitNodes.length, 1)) * Math.PI * 2;
-        node.x = centerX + (radius * Math.cos(angle));
-        node.y = centerY + (radius * Math.sin(angle));
-      });
-    }
-
-    function layoutGrid(nodes, canvasWidth, canvasHeight) {
-      const columns = 4;
-      const horizontalSpacing = 200;
-      const verticalSpacing = 160;
-      const startX = 140;
-      const startY = 120;
-
-      nodes.forEach((node, index) => {
-        const column = index % columns;
-        const row = Math.floor(index / columns);
-        node.x = startX + (column * horizontalSpacing);
-        node.y = startY + (row * verticalSpacing);
-      });
-    }
-
-    function applyLayout(mode, nodes, canvasWidth, canvasHeight) {
-      if (mode === "vertical") {
-        layoutVertical(nodes, canvasWidth, canvasHeight);
-        return;
-      }
-
-      if (mode === "radial") {
-        layoutRadial(nodes, canvasWidth, canvasHeight);
-        return;
-      }
-
-      if (mode === "grid") {
-        layoutGrid(nodes, canvasWidth, canvasHeight);
-        return;
-      }
-
-      layoutHorizontal(nodes, canvasWidth, canvasHeight);
-    }
-
-    function render() {
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-      const { nodes: rawNodes, edges: rawEdges } = getVisibleGraphData();
-      const { nodes: baseNodes, edges: baseEdges } = buildClusteredGraphData(rawNodes, rawEdges);
-      const focusNodes = focusNodeId ? getFocusNodes(focusNodeId, focusRadius, baseEdges) : null;
-      const nodes = (focusNodeId && !focusFadeMode)
-        ? baseNodes.filter((node) => focusNodes && focusNodes.has(node.id))
-        : baseNodes.map((node) => ({
-            ...node,
-            inFocus: !focusNodes || focusNodes.has(node.id)
-          }));
-      const edges = baseEdges.filter((edge) => {
-        if (!focusNodes) {
-          return true;
-        }
-
-        const sourceId = getEdgeEndpointId(edge.source);
-        const targetId = getEdgeEndpointId(edge.target);
-        return focusNodes.has(sourceId) && focusNodes.has(targetId);
-      });
-      const connectedNodeIds = new Set();
-
-      if (selectedNodeId !== null) {
-        for (const edge of edges) {
-          const sourceId = getEdgeEndpointId(edge.source);
-          const targetId = getEdgeEndpointId(edge.target);
-          if (sourceId === selectedNodeId || targetId === selectedNodeId) {
-            connectedNodeIds.add(sourceId);
-            connectedNodeIds.add(targetId);
-          }
-        }
-      }
-
-      svg.selectAll("*").remove();
-      svg.attr("viewBox", `0 0 ${width} ${height}`);
-      svg.on("click", (event) => {
-        if (event.target === svg.node()) {
-          focusNodeId = null;
-          selectedNodeId = null;
-          if (currentGraphData.viewMode === "call_path" && window.graphBridge && typeof window.graphBridge.sendGraph === "function") {
-            window.graphBridge.sendGraph(function(data) {
-              updateGraph(data);
-            });
-            return;
-          }
-          render();
-        }
-      });
-
-      if (!nodes.length) {
-        svg.append("text")
-          .attr("x", width / 2)
-          .attr("y", height / 2)
-          .attr("text-anchor", "middle")
-          .attr("fill", "#49617f")
-          .style("font-size", "14px")
-          .text("Waiting for graph data...");
-        return;
-      }
-
-      const root = svg.append("g");
-
-      if (!zoomBehavior) {
-        zoomBehavior = d3.zoom()
-          .scaleExtent([0.5, 2.5])
-          .on("zoom", (event) => {
-            currentTransform = event.transform;
-            root.attr("transform", currentTransform);
-          });
-      } else {
-        zoomBehavior.on("zoom", (event) => {
-          currentTransform = event.transform;
-          root.attr("transform", currentTransform);
-        });
-      }
-
-      svg.call(zoomBehavior);
-      const layoutNodes = [...nodes];
-      if (currentGraphData.viewMode === "call_path") {
-        layoutNodes.sort((left, right) => (left.call_path_order || 0) - (right.call_path_order || 0));
-      } else if (focusNodeId) {
-        layoutNodes.sort((left, right) => {
-          if (left.id === focusNodeId) {
-            return -1;
-          }
-          if (right.id === focusNodeId) {
-            return 1;
-          }
-          return 0;
-        });
-      }
-      applyLayout(
-        currentGraphData.viewMode === "call_path" ? "horizontal" : (focusNodeId ? "radial" : layoutMode),
-        layoutNodes,
-        width,
-        height
-      );
-      const nodeById = new Map(layoutNodes.map((node) => [node.id, node]));
-      const positionedEdges = edges.map((edge) => ({
-        ...edge,
-        sourceNode: nodeById.get(getEdgeEndpointId(edge.source)),
-        targetNode: nodeById.get(getEdgeEndpointId(edge.target))
-      }));
-
-      const link = root.append("g")
-        .selectAll("line")
-        .data(positionedEdges.filter((edge) => edge.sourceNode && edge.targetNode))
-        .enter()
-        .append("line")
-        .attr("class", "link")
-        .attr("stroke", (d) => {
-          if (currentGraphData.viewMode === "call_path") {
-            return "#b56cff";
-          }
-          const sourceId = getEdgeEndpointId(d.source);
-          const targetId = getEdgeEndpointId(d.target);
-          if (selectedNodeId === null) {
-            return "#2a2a33";
-          }
-          if (sourceId === selectedNodeId || targetId === selectedNodeId) {
-            return "#b56cff";
-          }
-          return "#2a2a33";
-        })
-        .attr("stroke-width", (d) => {
-          if (currentGraphData.viewMode === "call_path") {
-            return 4;
-          }
-          const sourceId = getEdgeEndpointId(d.source);
-          const targetId = getEdgeEndpointId(d.target);
-          if (selectedNodeId !== null && (sourceId === selectedNodeId || targetId === selectedNodeId)) {
-            return 4;
-          }
-          return 2;
-        })
-        .attr("opacity", (d) => {
-          if (currentGraphData.viewMode === "call_path") {
-            return 1;
-          }
-          const sourceId = getEdgeEndpointId(d.source);
-          const targetId = getEdgeEndpointId(d.target);
-          if (focusNodes && (!focusNodes.has(sourceId) || !focusNodes.has(targetId))) {
-            return focusFadeMode ? 0.08 : 0;
-          }
-          if (selectedNodeId === null) {
-            return 1;
-          }
-          if (sourceId === selectedNodeId || targetId === selectedNodeId) {
-            return 1;
-          }
-          return 0.2;
-        });
-
-      const node = root.append("g")
-        .selectAll("g")
-        .data(nodes)
-        .enter()
-        .append("g")
-        .attr("class", "node")
-        .classed("node--expanded", (d) => d.isExpanded)
-        .classed("node--selected", (d) => d.id === selectedNodeId)
-        .attr("opacity", (d) => {
-          if (currentGraphData.viewMode === "call_path") {
-            return 1;
-          }
-          if (focusNodes && !d.inFocus) {
-            return focusFadeMode ? 0.15 : 0;
-          }
-          if (selectedNodeId === null) {
-            return 1;
-          }
-          if (d.id === selectedNodeId || connectedNodeIds.has(d.id)) {
-            return 1;
-          }
-          return 0.25;
-        })
-        .on("click", (event, d) => {
-          event.stopPropagation();
-          selectedNodeId = d.id;
-          if (event.shiftKey) {
-            if (d.type !== "cluster" && window.graphBridge && typeof window.graphBridge.nodeSelected === "function") {
-              window.graphBridge.nodeSelected(d.id);
-            }
-            render();
-            return;
-          }
-
-          if (d.type !== "cluster" && window.graphBridge && typeof window.graphBridge.nodeSelected === "function") {
-            window.graphBridge.nodeSelected(d.id);
-          }
-
-          if (d.type === "function" && currentGraphData.viewMode !== "call_path") {
-            traceCallPath(d.id);
-            return;
-          }
-
-          if (d.type === "cluster") {
-            if (expandedClusters.has(d.id)) {
-              expandedClusters.delete(d.id);
-            } else {
-              expandedClusters.add(d.id);
-            }
-            render();
-            return;
-          }
-
-          if (!d.hasChildren) {
-            render();
-            return;
-          }
-
-          if (expandedNodes.has(d.id)) {
-            expandedNodes.delete(d.id);
-          } else {
-            expandedNodes.add(d.id);
-          }
-
-          render();
-        })
-        .on("dblclick", (event, d) => {
-          event.stopPropagation();
-          selectedNodeId = d.id;
-          focusNodeId = d.id;
-          if (window.graphBridge && typeof window.graphBridge.focusNode === "function") {
-            window.graphBridge.focusNode(d.id);
-          } else {
-            render();
-          }
-        });
-
-      node.append("circle")
-        .filter((d) => typeof d.compute_score === "number")
-        .attr("r", (d) => d.radius + 10)
-        .attr("fill", (d) => getComputeHaloColor(d.compute_score))
-        .attr("stroke", "none");
-
-      node.append("circle")
-        .attr("r", (d) => d.radius)
-        .attr("fill", (d) => d.color)
-        .attr("stroke", (d) => d.type === "cluster" ? "#b56cff" : "rgba(255, 255, 255, 0.95)")
-        .attr("stroke-width", (d) => d.type === "cluster" ? 4 : 3);
-
-      node.filter((d) => Array.isArray(d.markers) && d.markers.length > 0)
-        .append("circle")
-        .attr("class", "marker-badge")
-        .attr("r", 6)
-        .attr("cx", (d) => d.radius - 4)
-        .attr("cy", (d) => -d.radius + 4)
-        .attr("fill", (d) => getMarkerColor(d.markers[0]));
-
-      node.append("text")
-        .attr("text-anchor", "middle")
-        .attr("dy", 4)
-        .text((d) => d.label);
-
-      link
-        .attr("x1", (d) => d.sourceNode.x)
-        .attr("y1", (d) => d.sourceNode.y)
-        .attr("x2", (d) => d.targetNode.x)
-        .attr("y2", (d) => d.targetNode.y);
-
-      node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-      root.attr("transform", currentTransform);
-      svg.call(zoomBehavior.transform, currentTransform);
-    }
-
-    function initializeBridge() {
-      if (!window.qt || !window.qt.webChannelTransport) {
-        render();
-        return;
-      }
-
-      new QWebChannel(window.qt.webChannelTransport, function(channel) {
-        window.graphBridge = channel.objects.graphBridge;
-        window.graphBridge.sendGraph(function(data) {
-          updateGraph(data);
-        });
-      });
-    }
-
-    render();
-    initializeBridge();
-    window.addEventListener("resize", () => render());
-  </script>
+  <script src="./renderer.js"></script>
 </body>
 </html>

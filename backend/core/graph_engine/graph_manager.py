@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 
 
 class GraphManager:
@@ -82,6 +83,16 @@ class GraphManager:
         merged = dict(node)
         merged.update(self.get_metadata(node_id))
         return merged
+
+    def get_node_by_file_path(self, file_path: str) -> dict[str, object] | None:
+        for node in self.nodes:
+            if str(node.get("file_path") or "") != file_path:
+                continue
+            node_id = str(node.get("id") or "")
+            if not node_id:
+                continue
+            return self.get_node(node_id)
+        return None
 
     def list_modules(self) -> list[dict[str, object]]:
         modules = [dict(node) for node in self.nodes if node["type"] == "module"]
@@ -251,6 +262,150 @@ class GraphManager:
             "total_compute": total_compute,
             "view_mode": "call_path",
         }
+
+    def build_codebase_tree(self, project_path: str | Path, file_paths: list[str] | None = None) -> dict[str, object]:
+        project_root = Path(project_path)
+        root_id = project_root.name
+        file_node_ids = {
+            str(node["id"])
+            for node in self.nodes
+            if node.get("type") == "module"
+            and isinstance(node.get("file_path"), str)
+        }
+        visible_file_paths = set(file_paths or [])
+        if visible_file_paths:
+            file_node_ids = {
+                node_id
+                for node_id in file_node_ids
+                if str(self._node_index.get(node_id, {}).get("file_path") or node_id) in visible_file_paths
+            }
+
+        root: dict[str, object] = {
+            "id": root_id,
+            "name": project_root.name,
+            "type": "folder",
+            "children": [],
+            "child_count": 0,
+            "expanded": True,
+            "metadata_expanded": False,
+            "file_path": None,
+            "line_number": None,
+        }
+        folders: dict[str, dict[str, object]] = {"": root}
+
+        def ensure_folder(folder_path: str) -> dict[str, object]:
+            if folder_path in folders:
+                return folders[folder_path]
+
+            parts = folder_path.split("/")
+            current_path = []
+            parent_folder = root
+            for part in parts:
+                current_path.append(part)
+                joined = "/".join(current_path)
+                existing = folders.get(joined)
+                if existing is not None:
+                    parent_folder = existing
+                    continue
+
+                folder_node = {
+                    "id": joined,
+                    "name": part,
+                    "type": "folder",
+                    "children": [],
+                    "child_count": 0,
+                    "expanded": False,
+                    "metadata_expanded": False,
+                    "file_path": None,
+                    "line_number": None,
+                }
+                parent_folder["children"].append(folder_node)
+                folders[joined] = folder_node
+                parent_folder = folder_node
+
+            return parent_folder
+
+        for node_id in sorted(file_node_ids):
+            file_node = self._node_index.get(node_id)
+            if file_node is None:
+                continue
+
+            relative_path = str(file_node.get("file_path") or node_id)
+            parent_path = str(Path(relative_path).parent.as_posix())
+            parent_folder = root if parent_path in {".", ""} else ensure_folder(parent_path)
+            tally = self._compute_file_tally(node_id)
+            parent_folder["children"].append(
+                {
+                    "id": relative_path,
+                    "name": Path(relative_path).name,
+                    "type": "file",
+                    "children": [],
+                    "child_count": 0,
+                    "expanded": False,
+                    "metadata_expanded": False,
+                    "file_path": relative_path,
+                    "line_number": 1,
+                    "compute_tally": tally,
+                    "compute_tier": self._tier_for_tally(tally),
+                }
+            )
+
+        self._hydrate_folder_compute(root)
+        self._sort_tree_children(root)
+        return root
+
+    def _compute_file_tally(self, file_node_id: str) -> int:
+        tally = 0
+        for node in self.nodes:
+            if node.get("parent") != file_node_id:
+                continue
+            compute_score = self.get_metadata(str(node.get("id") or "")).get("compute_score")
+            if isinstance(compute_score, int):
+                tally += compute_score
+        return tally
+
+    def _tier_for_tally(self, tally: int) -> int:
+        if tally >= 9:
+            return 9
+        if tally >= 4:
+            return 6
+        return 3
+
+    def _hydrate_folder_compute(self, node: dict[str, object]) -> tuple[int, int]:
+        children = node.get("children", [])
+        if not isinstance(children, list) or not children:
+            tally = int(node.get("compute_tally") or 0)
+            tier = int(node.get("compute_tier") or self._tier_for_tally(tally))
+            node["compute_tally"] = tally
+            node["compute_tier"] = tier
+            return tally, tier
+
+        total_tally = 0
+        highest_tier = 3
+        node["child_count"] = len(children)
+        for child in children:
+            child_tally, child_tier = self._hydrate_folder_compute(child)
+            total_tally += child_tally
+            highest_tier = max(highest_tier, child_tier)
+
+        node["compute_tally"] = total_tally
+        node["compute_tier"] = highest_tier if total_tally > 0 else 3
+        return total_tally, int(node["compute_tier"])
+
+    def _sort_tree_children(self, node: dict[str, object]) -> None:
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            return
+
+        children.sort(
+            key=lambda child: (
+                -int(child.get("compute_tier") or 0),
+                str(child.get("type") != "folder"),
+                str(child.get("name") or "").lower(),
+            )
+        )
+        for child in children:
+            self._sort_tree_children(child)
 
     def _seed_example_graph(self) -> None:
         self.add_node("scanner", "scanner", "subsystem")
