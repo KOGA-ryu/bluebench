@@ -19,6 +19,7 @@ class ProjectLoader:
         self.graph_manager.clear()
         scanner = self.scanner_class(self.graph_manager, project_path)
         scanner.scan()
+        self.graph_manager.build_relationship_index()
         return self._list_python_files(project_path)
 
     def _list_python_files(self, project_path: Path) -> list[str]:

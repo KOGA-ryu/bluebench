@@ -11,7 +11,18 @@ class GraphManager:
         self._node_index: dict[str, dict[str, object]] = {}
         self._edge_index: set[tuple[str, str, str]] = set()
         self.node_metadata: dict[str, dict[str, object]] = {}
+        self.relationship_index: dict[str, dict[str, set[str]]] = self._empty_relationship_index()
+        self.relationship_file_metrics: dict[str, dict[str, int]] = {}
+        self.chapter_index: dict[str, str] = {}
         self._seed_example_graph()
+
+    def _empty_relationship_index(self) -> dict[str, dict[str, set[str]]]:
+        return {
+            "calls": {},
+            "imports": {},
+            "called_by": {},
+            "imported_by": {},
+        }
 
     def _default_metadata(self) -> dict[str, object]:
         return {
@@ -72,6 +83,9 @@ class GraphManager:
         self._node_index.clear()
         self._edge_index.clear()
         self.node_metadata.clear()
+        self.relationship_index = self._empty_relationship_index()
+        self.relationship_file_metrics = {}
+        self.chapter_index = {}
 
     def has_node(self, node_id: str) -> bool:
         return node_id in self._node_index
@@ -85,14 +99,63 @@ class GraphManager:
         return merged
 
     def get_node_by_file_path(self, file_path: str) -> dict[str, object] | None:
+        normalized = Path(file_path).as_posix()
         for node in self.nodes:
-            if str(node.get("file_path") or "") != file_path:
+            if str(node.get("file_path") or "") != normalized:
                 continue
             node_id = str(node.get("id") or "")
             if not node_id:
                 continue
             return self.get_node(node_id)
         return None
+
+    def build_relationship_index(self) -> None:
+        relationship_index = self._empty_relationship_index()
+        file_metrics = self._file_metrics()
+
+        for file_path in file_metrics:
+            for relation_name in relationship_index:
+                relationship_index[relation_name].setdefault(file_path, set())
+
+        node_to_file_path: dict[str, str] = {}
+        for node in self.nodes:
+            node_type = str(node.get("type") or "")
+            file_path = node.get("file_path")
+            if node_type not in {"module", "function", "class"} or not isinstance(file_path, str) or not file_path:
+                continue
+            node_to_file_path[str(node.get("id") or "")] = Path(file_path).as_posix()
+
+        for edge in self.edges:
+            edge_type = str(edge.get("type") or "")
+            source_path = node_to_file_path.get(str(edge.get("source") or ""))
+            target_path = node_to_file_path.get(str(edge.get("target") or ""))
+            if not source_path or not target_path or source_path == target_path:
+                continue
+
+            if edge_type == "calls":
+                relationship_index["calls"].setdefault(source_path, set()).add(target_path)
+                relationship_index["called_by"].setdefault(target_path, set()).add(source_path)
+            elif edge_type == "imports":
+                relationship_index["imports"].setdefault(source_path, set()).add(target_path)
+                relationship_index["imported_by"].setdefault(target_path, set()).add(source_path)
+
+        self.relationship_index = relationship_index
+        self.relationship_file_metrics = file_metrics
+
+    def get_file_calls(self, file_path: str) -> list[str]:
+        return self._sorted_relationships("calls", file_path)
+
+    def get_file_imports(self, file_path: str) -> list[str]:
+        return self._sorted_relationships("imports", file_path)
+
+    def get_file_called_by(self, file_path: str) -> list[str]:
+        return self._sorted_relationships("called_by", file_path)
+
+    def get_file_imported_by(self, file_path: str) -> list[str]:
+        return self._sorted_relationships("imported_by", file_path)
+
+    def get_chapter_index(self, file_path: str) -> str | None:
+        return self.chapter_index.get(Path(file_path).as_posix())
 
     def list_modules(self) -> list[dict[str, object]]:
         modules = [dict(node) for node in self.nodes if node["type"] == "module"]
@@ -264,6 +327,7 @@ class GraphManager:
         }
 
     def build_codebase_tree(self, project_path: str | Path, file_paths: list[str] | None = None) -> dict[str, object]:
+        self.build_relationship_index()
         project_root = Path(project_path)
         root_id = project_root.name
         file_node_ids = {
@@ -290,6 +354,12 @@ class GraphManager:
             "metadata_expanded": False,
             "file_path": None,
             "line_number": None,
+            "relationship_summary": {
+                "calls": 0,
+                "imports": 0,
+                "called_by": 0,
+                "imported_by": 0,
+            },
         }
         folders: dict[str, dict[str, object]] = {"": root}
 
@@ -318,6 +388,12 @@ class GraphManager:
                     "metadata_expanded": False,
                     "file_path": None,
                     "line_number": None,
+                    "relationship_summary": {
+                        "calls": 0,
+                        "imports": 0,
+                        "called_by": 0,
+                        "imported_by": 0,
+                    },
                 }
                 parent_folder["children"].append(folder_node)
                 folders[joined] = folder_node
@@ -347,11 +423,18 @@ class GraphManager:
                     "line_number": 1,
                     "compute_tally": tally,
                     "compute_tier": self._tier_for_tally(tally),
+                    "relationship_summary": {
+                        "calls": len(self.get_file_calls(relative_path)),
+                        "imports": len(self.get_file_imports(relative_path)),
+                        "called_by": len(self.get_file_called_by(relative_path)),
+                        "imported_by": len(self.get_file_imported_by(relative_path)),
+                    },
                 }
             )
 
         self._hydrate_folder_compute(root)
         self._sort_tree_children(root)
+        self._build_chapter_index(root)
         return root
 
     def _compute_file_tally(self, file_node_id: str) -> int:
@@ -407,6 +490,65 @@ class GraphManager:
         for child in children:
             self._sort_tree_children(child)
 
+    def _build_chapter_index(self, root: dict[str, object]) -> None:
+        chapter_index: dict[str, str] = {}
+        chapter_number = 1
+
+        for child in root.get("children", []) if isinstance(root.get("children"), list) else []:
+            files = self._collect_files_in_display_order(child)
+            if not files:
+                continue
+            for file_number, file_path in enumerate(files, start=1):
+                chapter_index[file_path] = f"{chapter_number}.{file_number}"
+            chapter_number += 1
+
+        self.chapter_index = chapter_index
+
+    def _collect_files_in_display_order(self, node: dict[str, object]) -> list[str]:
+        node_type = str(node.get("type") or "")
+        if node_type == "file":
+            file_path = node.get("file_path")
+            if isinstance(file_path, str) and file_path:
+                return [Path(file_path).as_posix()]
+            return []
+
+        ordered_files: list[str] = []
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            return ordered_files
+        for child in children:
+            ordered_files.extend(self._collect_files_in_display_order(child))
+        return ordered_files
+
+    def _sorted_relationships(self, relation_name: str, file_path: str) -> list[str]:
+        normalized_file_path = Path(file_path).as_posix()
+        related_paths = self.relationship_index.get(relation_name, {}).get(normalized_file_path, set())
+        return sorted(
+            related_paths,
+            key=lambda path: (
+                -int(self.relationship_file_metrics.get(path, {}).get("compute_tier", 3)),
+                -int(self.relationship_file_metrics.get(path, {}).get("compute_tally", 0)),
+                path.lower(),
+            ),
+        )
+
+    def _file_metrics(self) -> dict[str, dict[str, int]]:
+        metrics: dict[str, dict[str, int]] = {}
+        for node in self.nodes:
+            if node.get("type") != "module":
+                continue
+            file_path = node.get("file_path")
+            node_id = str(node.get("id") or "")
+            if not isinstance(file_path, str) or not file_path or not node_id:
+                continue
+            normalized_path = Path(file_path).as_posix()
+            tally = self._compute_file_tally(node_id)
+            metrics[normalized_path] = {
+                "compute_tally": tally,
+                "compute_tier": self._tier_for_tally(tally),
+            }
+        return metrics
+
     def _seed_example_graph(self) -> None:
         self.add_node("scanner", "scanner", "subsystem")
         self.add_node("frontend", "frontend", "module")
@@ -417,3 +559,4 @@ class GraphManager:
         self.add_edge("frontend", "repository", "planned_flow")
         self.add_edge("repository", "backend", "planned_flow")
         self.add_edge("backend", "models", "planned_flow")
+        self.build_relationship_index()

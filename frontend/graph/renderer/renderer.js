@@ -14,7 +14,7 @@
   const statusLabel = document.getElementById("statusLabel");
   const frozenSelection = d3.select(frozenContent);
   const scrollSelection = d3.select(scrollContent);
-  let currentGraphData = { nodes: [], reserved_regions: [], grid_mode: false, document_title: "Blue Bench" };
+  let currentGraphData = { nodes: [], reserved_regions: [], grid_mode: false, document_title: "(╯°□°)╯︵ ┻━┻ Blue Bench" };
   let tooltipTimer = null;
 
   function logEvent(eventName, payload) {
@@ -22,7 +22,7 @@
   }
 
   function updateGraph(data) {
-    currentGraphData = data || { nodes: [], reserved_regions: [], grid_mode: false, document_title: "Blue Bench" };
+    currentGraphData = data || { nodes: [], reserved_regions: [], grid_mode: false, document_title: "(╯°□°)╯︵ ┻━┻ Blue Bench" };
     logEvent("layout_received", {
       node_count: Array.isArray(currentGraphData.nodes) ? currentGraphData.nodes.length : 0,
       grid_mode: Boolean(currentGraphData.grid_mode),
@@ -317,12 +317,23 @@
     if (!node.metadata_expanded) {
       refs.metadataPanel.scrollTop = 0;
     }
+    const relationshipSummary = node.relationship_summary || {};
+    const relationshipLines = [
+      ["Calls", Number(relationshipSummary.calls || 0)],
+      ["Imports", Number(relationshipSummary.imports || 0)],
+      ["Called By", Number(relationshipSummary.called_by || 0)],
+      ["Imported By", Number(relationshipSummary.imported_by || 0)],
+    ]
+      .filter(([, count]) => count > 0)
+      .map(([label, count]) => `<div>${escapeHtml(label)}: ${count}</div>`)
+      .join("");
     refs.metadataPanel.innerHTML = `
       <div>Type: ${escapeHtml(node.type || "")}</div>
       <div>Compute tier: ${tier}</div>
       <div>Compute tally: ${Number(node.compute_tally || 0)}</div>
       <div>Children: ${Number(node.child_count || 0)}</div>
       <div>Path: ${escapeHtml(node.file_path || node.id || "")}</div>
+      ${relationshipLines}
     `;
     refs.loadMore.hidden = !hasMore;
   }
@@ -398,7 +409,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>${escapeHtml(currentGraphData.document_title || "Blue Bench")}</title>
+  <title>${escapeHtml(currentGraphData.document_title || "(╯°□°)╯︵ ┻━┻ Blue Bench")}</title>
   <style>${document.querySelector("style").textContent}</style>
 </head>
 <body>${document.querySelector(".shell").outerHTML}</body>

@@ -15,6 +15,7 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractButton,
     QApplication,
     QPushButton,
     QComboBox,
@@ -604,6 +605,16 @@ class NodeInspectorWindow(QMainWindow):
         self.current_source_lines: list[str] = []
 
         self.setFixedSize(460, 640)
+        self.setStyleSheet(
+            """
+            QToolTip {
+                background-color: #4a1616;
+                color: #f5dada;
+                border: 1px solid #7a2b2b;
+                padding: 6px;
+            }
+            """
+        )
 
         central_widget = QWidget()
         layout = QVBoxLayout(central_widget)
@@ -683,6 +694,7 @@ class NodeInspectorWindow(QMainWindow):
         self.relationships_layout.setContentsMargins(8, 8, 8, 8)
         self.relationships_layout.setSpacing(8)
         self.relationships_layout.addStretch()
+        self.relationship_file_buttons: list[QAbstractButton] = []
 
         relationships_scroll = QScrollArea()
         relationships_scroll.setWidgetResizable(True)
@@ -734,6 +746,7 @@ class NodeInspectorWindow(QMainWindow):
         )
         self._populate_relationships_tab(node)
         self._populate_metadata_tab(node)
+        self._set_requested_tab(str(node.get("preferred_tab") or "Code"))
         if not loaded:
             QTimer.singleShot(0, self.close)
 
@@ -829,28 +842,48 @@ class NodeInspectorWindow(QMainWindow):
 
     def _populate_relationships_tab(self, node: dict) -> None:
         self._clear_dynamic_layout(self.relationships_layout)
-        relationship_map = self._get_relationship_groups(node)
-        for title, file_paths in relationship_map:
-            section = CollapsibleSection(f"{title} ({len(file_paths)})")
+        self.relationship_file_buttons = []
+        file_path = str(node.get("file_path") or "")
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        expand_all = QPushButton("Expand All")
+        collapse_all = QPushButton("Collapse All")
+        expand_all.clicked.connect(lambda: self._set_relationship_expansion(True))
+        collapse_all.clicked.connect(lambda: self._set_relationship_expansion(False))
+        controls_layout.addWidget(expand_all)
+        controls_layout.addWidget(collapse_all)
+        controls_layout.addStretch()
+        self.relationships_layout.insertWidget(self.relationships_layout.count() - 1, controls)
+
+        relationship_map = self._get_relationship_groups(file_path)
+        for title, file_paths, getter, recurse in relationship_map:
+            total_count = self._relationship_total_count(file_path, getter, recurse)
+            section = CollapsibleSection(f"{title} ({total_count} total)")
             if not file_paths:
                 empty_label = QLabel("No relationships")
                 empty_label.setStyleSheet("color: #777777;")
                 section.content_layout.addWidget(empty_label)
             else:
-                for file_path in file_paths:
-                    row = QWidget()
-                    row_layout = QHBoxLayout(row)
-                    row_layout.setContentsMargins(0, 0, 0, 0)
-                    row_layout.setSpacing(6)
-                    label = QLabel(file_path)
-                    open_button = QPushButton("open")
-                    open_button.setFixedWidth(56)
-                    open_button.clicked.connect(
-                        lambda _checked=False, path=file_path: self.open_file_inspector({"file_path": path})
+                top_level_indexes = {
+                    related_path: self.graph_manager.get_chapter_index(related_path) or f"{index + 1}"
+                    for index, related_path in enumerate(file_paths)
+                }
+                rendered_indexes = dict(top_level_indexes)
+                for related_path in file_paths:
+                    section.content_layout.addWidget(
+                        self._create_relationship_entry_widget(
+                            related_path,
+                            getter,
+                            recurse,
+                            ancestry={file_path},
+                            display_index=top_level_indexes[related_path],
+                            top_level_indexes=top_level_indexes,
+                            rendered_indexes=rendered_indexes,
+                            allow_cross_reference=False,
+                        )
                     )
-                    row_layout.addWidget(label, 1)
-                    row_layout.addWidget(open_button)
-                    section.content_layout.addWidget(row)
             self.relationships_layout.insertWidget(self.relationships_layout.count() - 1, section)
 
     def _populate_metadata_tab(self, node: dict) -> None:
@@ -895,59 +928,233 @@ class NodeInspectorWindow(QMainWindow):
 
         summary_section = CollapsibleSection("Relationships summary")
         summary_section.setContentVisible(True)
-        for title, file_paths in self._get_relationship_groups(node):
+        for title, file_paths, _getter, _recurse in self._get_relationship_groups(str(node.get("file_path") or "")):
             summary_section.content_layout.addWidget(QLabel(f"{title}: {len(file_paths)}"))
 
         for section in [file_info, compute_info, notes_section, summary_section]:
             self.metadata_layout.insertWidget(self.metadata_layout.count() - 1, section)
 
-    def _get_relationship_groups(self, node: dict) -> list[tuple[str, list[str]]]:
-        module_id = str(node.get("file_path") or node.get("id") or "")
-        if not module_id:
-            return [("Calls", []), ("Imports", []), ("Imported By", []), ("Used By", [])]
-
-        calls: set[str] = set()
-        imports: set[str] = set()
-        imported_by: set[str] = set()
-        used_by: set[str] = set()
-        function_ids = {
-            str(graph_node.get("id") or "")
-            for graph_node in self.graph_manager.nodes
-            if str(graph_node.get("parent") or "") == module_id
-            and graph_node.get("type") in {"function", "class"}
-        }
-
-        for edge in self.graph_manager.edges:
-            source = str(edge.get("source") or "")
-            target = str(edge.get("target") or "")
-            edge_type = str(edge.get("type") or "")
-
-            if edge_type == "imports":
-                if source == module_id:
-                    target_node = self.graph_manager.get_node(target)
-                    if target_node and target_node.get("file_path"):
-                        imports.add(str(target_node.get("file_path")))
-                if target == module_id:
-                    source_node = self.graph_manager.get_node(source)
-                    if source_node and source_node.get("file_path"):
-                        imported_by.add(str(source_node.get("file_path")))
-
-            if edge_type == "calls":
-                if source in function_ids:
-                    target_node = self.graph_manager.get_node(target)
-                    if target_node and target_node.get("file_path"):
-                        calls.add(str(target_node.get("file_path")))
-                if target in function_ids:
-                    source_node = self.graph_manager.get_node(source)
-                    if source_node and source_node.get("file_path"):
-                        used_by.add(str(source_node.get("file_path")))
+    def _get_relationship_groups(
+        self,
+        file_path: str,
+    ) -> list[tuple[str, list[str], Callable[[str], list[str]], bool]]:
+        if not file_path:
+            empty: list[tuple[str, list[str], Callable[[str], list[str]], bool]] = []
+            for title, getter, recurse in self._relationship_specs():
+                empty.append((title, [], getter, recurse))
+            return empty
 
         return [
-            ("Calls", sorted(path for path in calls if path != module_id)),
-            ("Imports", sorted(path for path in imports if path != module_id)),
-            ("Imported By", sorted(path for path in imported_by if path != module_id)),
-            ("Used By", sorted(path for path in used_by if path != module_id)),
+            (title, getter(file_path), getter, recurse)
+            for title, getter, recurse in self._relationship_specs()
         ]
+
+    def _relationship_specs(self) -> list[tuple[str, Callable[[str], list[str]], bool]]:
+        return [
+            ("Calls", self.graph_manager.get_file_calls, True),
+            ("Imports", self.graph_manager.get_file_imports, False),
+            ("Called By", self.graph_manager.get_file_called_by, False),
+            ("Imported By", self.graph_manager.get_file_imported_by, False),
+        ]
+
+    def _create_relationship_entry_widget(
+        self,
+        file_path: str,
+        getter: Callable[[str], list[str]],
+        recurse: bool,
+        ancestry: set[str],
+        display_index: str,
+        top_level_indexes: dict[str, str],
+        rendered_indexes: dict[str, str],
+        allow_cross_reference: bool,
+    ) -> QWidget:
+        cycle_detected = file_path in ancestry
+        if cycle_detected:
+            return self._relationship_cross_reference_row("↺ cycle detected", file_path, clickable=False)
+
+        if allow_cross_reference and file_path in top_level_indexes:
+            reference_index = top_level_indexes[file_path]
+            return self._relationship_cross_reference_row(
+                f"↳ see {reference_index} {Path(file_path).name}",
+                file_path,
+            )
+
+        existing_index = rendered_indexes.get(file_path)
+        if allow_cross_reference and existing_index is not None:
+            return self._relationship_cross_reference_row(
+                f"↳ see {existing_index} {Path(file_path).name}",
+                file_path,
+            )
+
+        rendered_indexes.setdefault(file_path, display_index)
+        child_paths = [] if not recurse else [path for path in getter(file_path) if path != file_path]
+        label_text = self._relationship_entry_label(display_index, file_path)
+        if not child_paths:
+            return self._relationship_leaf_row(label_text, file_path, show_open=True)
+
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(4)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
+
+        toggle_button = QToolButton()
+        toggle_button.setText(">")
+        toggle_button.setCheckable(True)
+        toggle_button.setChecked(False)
+        toggle_button.setFixedWidth(28)
+
+        entry_button = self._relationship_file_button(label_text, file_path)
+
+        content = QWidget()
+        content.setVisible(False)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 0, 0, 0)
+        content_layout.setSpacing(4)
+
+        def toggle_children() -> None:
+            expanded = toggle_button.isChecked()
+            toggle_button.setText("v" if expanded else ">")
+            content.setVisible(expanded)
+
+        toggle_button.clicked.connect(toggle_children)
+        toggle_button._apply_relationship_expanded = lambda expanded: self._apply_relationship_toggle(  # type: ignore[attr-defined]
+            toggle_button,
+            content,
+            expanded,
+        )
+        header_layout.addWidget(toggle_button)
+        header_layout.addWidget(entry_button, 1)
+        container_layout.addWidget(header)
+        container_layout.addWidget(content)
+
+        next_ancestry = set(ancestry)
+        next_ancestry.add(file_path)
+        for child_index, child_path in enumerate(child_paths):
+            child_display_index = f"{display_index}.{self._alpha_index(child_index)}"
+            content_layout.addWidget(
+                self._create_relationship_entry_widget(
+                    child_path,
+                    getter,
+                    recurse,
+                    next_ancestry,
+                    child_display_index,
+                    top_level_indexes,
+                    rendered_indexes,
+                    allow_cross_reference=True,
+                )
+            )
+        return container
+
+    def _relationship_leaf_row(self, label_text: str, file_path: str, show_open: bool) -> QWidget:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(self._relationship_file_button(label_text, file_path), 1)
+        if show_open:
+            open_button = QPushButton("open")
+            open_button.setFixedWidth(56)
+            open_button.clicked.connect(
+                lambda _checked=False, path=file_path: self.open_file_inspector(
+                    {"file_path": path, "preferred_tab": "Relationships"}
+                )
+            )
+            row_layout.addWidget(open_button)
+        return row
+
+    def _relationship_cross_reference_row(self, label_text: str, file_path: str, clickable: bool = True) -> QWidget:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        if clickable:
+            row_layout.addWidget(self._relationship_file_button(label_text, file_path), 1)
+        else:
+            row_layout.addWidget(QLabel(label_text), 1)
+        return row
+
+    def _relationship_file_button(self, label_text: str, file_path: str) -> QPushButton:
+        button = QPushButton(label_text)
+        button.setFlat(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setStyleSheet("text-align: left; padding: 2px 4px; border: 0;")
+        button.setToolTip(self._relationship_hover_preview(file_path))
+        button.clicked.connect(
+            lambda _checked=False, path=file_path: self.open_file_inspector(
+                {"file_path": path, "preferred_tab": "Relationships"}
+            )
+        )
+        self.relationship_file_buttons.append(button)
+        return button
+
+    def _relationship_entry_label(self, display_index: str, file_path: str) -> str:
+        return f"{display_index} {Path(file_path).name} — {file_path}"
+
+    def _relationship_hover_preview(self, file_path: str) -> str:
+        source_path = self.project_path / file_path
+        try:
+            lines = source_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        preview = "\n".join(lines[:4]).strip() or "(preview unavailable)"
+        return f"{Path(file_path).name}\n{file_path}\n\n{preview}"
+
+    def _relationship_total_count(
+        self,
+        file_path: str,
+        getter: Callable[[str], list[str]],
+        recurse: bool,
+    ) -> int:
+        if not file_path:
+            return 0
+        if not recurse:
+            return len(getter(file_path))
+
+        visited: set[str] = set()
+
+        def visit(current_path: str) -> None:
+            for related_path in getter(current_path):
+                if related_path in visited or related_path == current_path:
+                    continue
+                visited.add(related_path)
+                visit(related_path)
+
+        visit(file_path)
+        return len(visited)
+
+    def _alpha_index(self, index: int) -> str:
+        value = index + 1
+        letters: list[str] = []
+        while value > 0:
+            value, remainder = divmod(value - 1, 26)
+            letters.append(chr(ord("a") + remainder))
+        return "".join(reversed(letters))
+
+    def _set_relationship_expansion(self, expanded: bool) -> None:
+        for section in self.relationships_container.findChildren(CollapsibleSection):
+            section.setContentVisible(expanded)
+        for toggle_button in self.relationships_container.findChildren(QToolButton):
+            apply_expanded = getattr(toggle_button, "_apply_relationship_expanded", None)
+            if callable(apply_expanded):
+                apply_expanded(expanded)
+
+    def _apply_relationship_toggle(self, toggle_button: QToolButton, content: QWidget, expanded: bool) -> None:
+        toggle_button.setChecked(expanded)
+        toggle_button.setText("v" if expanded else ">")
+        content.setVisible(expanded)
+
+    def _set_requested_tab(self, tab_name: str) -> None:
+        normalized = tab_name.strip().lower()
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index).strip().lower() == normalized:
+                self.tabs.setCurrentIndex(index)
+                return
+        self.tabs.setCurrentIndex(0)
 
     def _get_note_entries(self) -> list[dict[str, object]]:
         current_annotations = self.code_viewer.line_annotations.get(self.code_viewer.current_file_path, {})
@@ -1041,7 +1248,7 @@ def create_navigator_panel(title: str, width: int) -> tuple[QWidget, QLabel, QTr
 class BlueBenchWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Blue Bench")
+        self.setWindowTitle("(╯°□°)╯︵ ┻━┻ Blue Bench")
         self.resize(1200, 700)
         self.settings = QSettings("BlueBench", "BlueBenchApp")
         self.graph_bridge = GraphBridge()
@@ -1271,7 +1478,11 @@ class BlueBenchWindow(QMainWindow):
         if node is None:
             return
 
-        inspector_payload = {
+        inspector_payload = self._build_inspector_payload(node, payload.get("preferred_tab"))
+        self._update_inspector(inspector_payload)
+
+    def _build_inspector_payload(self, node: dict[str, object], preferred_tab: object = None) -> dict[str, object]:
+        payload = {
             "id": node.get("id"),
             "name": node.get("name"),
             "type": node.get("type"),
@@ -1283,7 +1494,9 @@ class BlueBenchWindow(QMainWindow):
             "parent": node.get("parent"),
             "call_path_total_compute": node.get("call_path_total_compute"),
         }
-        self._update_inspector(inspector_payload)
+        if isinstance(preferred_tab, str) and preferred_tab:
+            payload["preferred_tab"] = preferred_tab
+        return payload
 
     def _remove_node_window(self, node_id: str) -> None:
         self.node_windows.pop(node_id, None)
