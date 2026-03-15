@@ -49,6 +49,9 @@ class PythonTracer:
         self.collector = collector
         self._thread_stacks: dict[int, list[_TraceFrame]] = {}
         self._enabled = False
+        self._instrumentation_root = Path(__file__).resolve().parent
+        self._excluded_relative_prefixes = ("backend/instrumentation/",)
+        self._callback_guard = threading.local()
 
     def start(self) -> None:
         if self._enabled:
@@ -64,51 +67,64 @@ class PythonTracer:
         self._thread_stacks.clear()
 
     def _profile(self, frame: types.FrameType, event: str, arg) -> None:  # type: ignore[override]
-        if event not in {"call", "return", "exception"}:
+        if getattr(self._callback_guard, "active", False):
             return
-        thread_id = threading.get_ident()
-        stack = self._thread_stacks.setdefault(thread_id, [])
+        self._callback_guard.active = True
+        callback_started = time.perf_counter()
+        should_record_callback = False
+        try:
+            if event not in {"call", "return", "exception"}:
+                return
+            thread_id = threading.get_ident()
+            stack = self._thread_stacks.setdefault(thread_id, [])
 
-        if event == "call":
-            trace_frame = self._classify_frame(frame, stack)
-            if trace_frame is not None:
-                stack.append(trace_frame)
-            return
+            if event == "call":
+                trace_frame = self._classify_frame(frame, stack)
+                if trace_frame is not None:
+                    stack.append(trace_frame)
+                    should_record_callback = True
+                return
 
-        if not stack:
-            return
+            if not stack:
+                return
 
-        current = stack[-1]
-        if event == "exception":
-            current.had_exception = True
-            exception_type = arg[0] if isinstance(arg, tuple) and arg else None
-            current.last_exception_type = getattr(exception_type, "__name__", None)
-            return
+            current = stack[-1]
+            if event == "exception":
+                current.had_exception = True
+                exception_type = arg[0] if isinstance(arg, tuple) and arg else None
+                current.last_exception_type = getattr(exception_type, "__name__", None)
+                should_record_callback = True
+                return
 
-        stack.pop()
-        elapsed_ms = (time.perf_counter() - current.started_at) * 1000.0
-        self_time_ms = max(elapsed_ms - current.child_time_ms, 0.0)
-        if stack:
-            stack[-1].child_time_ms += elapsed_ms
+            stack.pop()
+            elapsed_ms = (time.perf_counter() - current.started_at) * 1000.0
+            self_time_ms = max(elapsed_ms - current.child_time_ms, 0.0)
+            if stack:
+                stack[-1].child_time_ms += elapsed_ms
+            should_record_callback = True
 
-        if current.kind == "project" and current.symbol_key and current.file_path and current.display_name and current.function_name:
-            self.collector.record_symbol_event(
-                SymbolEvent(
-                    symbol_key=current.symbol_key,
-                    display_name=current.display_name,
-                    file_path=current.file_path,
-                    function_name=current.function_name,
-                    elapsed_ms=elapsed_ms,
-                    self_time_ms=self_time_ms,
-                    recursion_depth=current.recursion_depth,
-                    had_exception=current.had_exception,
-                    exception_type=current.last_exception_type,
+            if current.kind == "project" and current.symbol_key and current.file_path and current.display_name and current.function_name:
+                self.collector.record_symbol_event(
+                    SymbolEvent(
+                        symbol_key=current.symbol_key,
+                        display_name=current.display_name,
+                        file_path=current.file_path,
+                        function_name=current.function_name,
+                        elapsed_ms=elapsed_ms,
+                        self_time_ms=self_time_ms,
+                        recursion_depth=current.recursion_depth,
+                        had_exception=current.had_exception,
+                        exception_type=current.last_exception_type,
+                    )
                 )
-            )
-        elif current.kind == "external" and current.track_external and current.bucket_name:
-            self.collector.record_external_bucket(
-                ExternalBucketEvent(bucket_name=current.bucket_name, elapsed_ms=elapsed_ms)
-            )
+            elif current.kind == "external" and current.track_external and current.bucket_name:
+                self.collector.record_external_bucket(
+                    ExternalBucketEvent(bucket_name=current.bucket_name, elapsed_ms=elapsed_ms)
+                )
+        finally:
+            if should_record_callback:
+                self.collector.record_tracer_callback_time((time.perf_counter() - callback_started) * 1000.0)
+            self._callback_guard.active = False
 
     def _classify_frame(self, frame: types.FrameType, stack: list[_TraceFrame]) -> _TraceFrame | None:
         code = frame.f_code
@@ -117,9 +133,15 @@ class PythonTracer:
             return None
         resolved_path = Path(filename).resolve()
         started_at = time.perf_counter()
+        if self._is_excluded_resolved_path(resolved_path):
+            return None
+        relative_path = self._relative_project_path(resolved_path)
+        if relative_path is not None and any(relative_path.startswith(prefix) for prefix in self._excluded_relative_prefixes):
+            return None
 
         if self._is_project_file(resolved_path):
-            relative_path = resolved_path.relative_to(self.project_root).as_posix()
+            if relative_path is None:
+                return None
             function_name, symbol_key, display_name = self._symbol_identity(frame, relative_path, stack)
             if symbol_key is None or display_name is None or function_name is None:
                 return None
@@ -146,11 +168,27 @@ class PythonTracer:
         )
 
     def _is_project_file(self, resolved_path: Path) -> bool:
-        try:
-            resolved_path.relative_to(self.project_root)
-        except ValueError:
+        if self._is_excluded_resolved_path(resolved_path):
+            return False
+        relative_path = self._relative_project_path(resolved_path)
+        if relative_path is None:
+            return False
+        if any(relative_path.startswith(prefix) for prefix in self._excluded_relative_prefixes):
             return False
         return resolved_path.suffix == ".py"
+
+    def _relative_project_path(self, resolved_path: Path) -> str | None:
+        try:
+            return resolved_path.relative_to(self.project_root).as_posix()
+        except ValueError:
+            return None
+
+    def _is_excluded_resolved_path(self, resolved_path: Path) -> bool:
+        try:
+            resolved_path.relative_to(self._instrumentation_root)
+            return True
+        except ValueError:
+            return False
 
     def _symbol_identity(
         self,
@@ -184,4 +222,3 @@ class PythonTracer:
         if top_level_module:
             return f"external:{top_level_module}"
         return "external:unknown"
-

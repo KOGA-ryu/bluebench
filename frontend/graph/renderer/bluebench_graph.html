@@ -121,7 +121,8 @@
       pointer-events: auto;
     }
 
-    .node.is-header-only .node-body {
+    .node.is-header-only .metadata-panel,
+    .node.is-header-only .load-more {
       display: none;
     }
 
@@ -189,6 +190,7 @@
       flex-direction: column;
       gap: 8px;
       background: linear-gradient(180deg, rgba(12, 10, 18, 0.9), rgba(17, 13, 25, 0.98));
+      position: relative;
     }
 
     .indicator-row {
@@ -246,6 +248,12 @@
       text-transform: uppercase;
       padding: 6px 8px;
       cursor: pointer;
+    }
+
+    .metadata-toggle {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
     }
 
     .tooltip {

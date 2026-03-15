@@ -67,6 +67,7 @@ class InstrumentationTests(unittest.TestCase):
                 {
                     "run_id": run_id,
                     "run_name": "stress",
+                    "project_root": str(project_root),
                     "scenario_kind": "stress",
                     "hardware_profile": "local",
                     "started_at": "2026-03-14T00:00:00+00:00",
@@ -134,6 +135,13 @@ class InstrumentationTests(unittest.TestCase):
             file_scores = storage.fetch_file_summary_map(run_id)
             self.assertIn("pkg/a.py", file_scores)
             self.assertGreater(file_scores["pkg/a.py"], file_scores["pkg/b.py"])
+            self.assertEqual(len(storage.list_completed_runs()), 1)
+            self.assertEqual(len(storage.list_completed_runs(project_root=project_root)), 1)
+            self.assertIsNotNone(storage.fetch_file_summary(run_id, "pkg/a.py"))
+            self.assertEqual(
+                [row["symbol_key"] for row in storage.fetch_function_summaries_for_file(run_id, "pkg/a.py")],
+                ["pkg/a.py::run"],
+            )
 
 
 if __name__ == "__main__":

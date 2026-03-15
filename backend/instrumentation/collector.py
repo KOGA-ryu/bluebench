@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from concurrent.futures import Future
 from pathlib import Path
 import threading
+import time
 from uuid import uuid4
 
 from .aggregator import BackgroundAggregator
@@ -65,15 +67,22 @@ class RunMetricsCollector:
         self._ranking = LiveRankingCalculator()
         self._sampler = ResourceSampler(self.record_resource_sample, interval_seconds=self.sample_interval_seconds)
         self._tracer = PythonTracer(self.project_root, self)
+        self._trace_event_count = 0
+        self._tracer_callback_time_ms = 0.0
+        self._sqlite_write_time_ms = 0.0
+        self._run_started_perf: float | None = None
+        self._run_finished_perf: float | None = None
 
     def start(self) -> str:
         self.storage.initialize_schema()
         self.started_at = datetime.now(UTC).isoformat()
+        self._run_started_perf = time.perf_counter()
         self.status = "running"
         self.storage.insert_run(
             {
                 "run_id": self.run_id,
                 "run_name": self.run_name,
+                "project_root": str(self.project_root),
                 "scenario_kind": self.scenario_kind,
                 "hardware_profile": self.hardware_profile,
                 "started_at": self.started_at,
@@ -85,15 +94,18 @@ class RunMetricsCollector:
         self._tracer.start()
         return self.run_id
 
-    def stop(self, status: str = "completed") -> str:
+    def stop(self, status: str = "completed", aggregate_async: bool = True) -> Future | None:
         self._tracer.stop()
         self._sampler.stop()
+        self._run_finished_perf = time.perf_counter()
         self.finished_at = datetime.now(UTC).isoformat()
         self.status = status
+        write_started = time.perf_counter()
         self.storage.insert_run(
             {
                 "run_id": self.run_id,
                 "run_name": self.run_name,
+                "project_root": str(self.project_root),
                 "scenario_kind": self.scenario_kind,
                 "hardware_profile": self.hardware_profile,
                 "started_at": self.started_at or self.finished_at,
@@ -105,8 +117,10 @@ class RunMetricsCollector:
         self.storage.insert_resource_samples(self.run_id, self.resource_sample_rows())
         self.storage.insert_external_bucket_rows(self.run_id, self.external_bucket_rows())
         self.storage.insert_live_file_rows(self.run_id, self.live_ranking_rows())
-        self.aggregator.aggregate_run_async(self.run_id)
-        return self.run_id
+        self._sqlite_write_time_ms += (time.perf_counter() - write_started) * 1000.0
+        if aggregate_async:
+            return self.aggregator.aggregate_run_async(self.run_id)
+        return None
 
     def record_symbol_event(self, event: SymbolEvent) -> None:
         with self._lock:
@@ -142,6 +156,11 @@ class RunMetricsCollector:
     def record_resource_sample(self, sample: ResourceSample) -> None:
         with self._lock:
             self._resource_samples.append(sample)
+
+    def record_tracer_callback_time(self, elapsed_ms: float) -> None:
+        with self._lock:
+            self._trace_event_count += 1
+            self._tracer_callback_time_ms += elapsed_ms
 
     def function_rows(self) -> list[dict[str, object]]:
         with self._lock:
@@ -205,3 +224,67 @@ class RunMetricsCollector:
     def live_ranking_rows(self) -> list[dict[str, object]]:
         return self.live_hot_files(limit=1000)
 
+    def latest_resource_sample(self) -> dict[str, object]:
+        with self._lock:
+            if not self._resource_samples:
+                return {
+                    "sample_ts": 0.0,
+                    "cpu_percent": 0.0,
+                    "rss_mb": 0.0,
+                    "read_bytes": None,
+                    "write_bytes": None,
+                }
+            sample = self._resource_samples[-1]
+        return {
+            "sample_ts": sample.sample_ts,
+            "cpu_percent": sample.cpu_percent,
+            "rss_mb": sample.rss_mb,
+            "read_bytes": sample.read_bytes,
+            "write_bytes": sample.write_bytes,
+        }
+
+    def debug_snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "raw_function_row_count": len(self._functions),
+                "sampler_sample_count": len(self._resource_samples),
+                "trace_event_count": self._trace_event_count,
+                "files_seen": len({item.file_path for item in self._functions.values()}),
+                "external_buckets": [
+                    {
+                        "bucket_name": item.bucket_name,
+                        "total_time_ms": item.total_time_ms,
+                        "call_count": item.call_count,
+                    }
+                    for item in sorted(
+                        self._external_buckets.values(),
+                        key=lambda entry: (-entry.total_time_ms, entry.bucket_name),
+                    )
+                ],
+            }
+
+    def performance_snapshot(self) -> dict[str, object]:
+        with self._lock:
+            function_count = len(self._functions)
+            files_seen = len({item.file_path for item in self._functions.values()})
+            trace_event_count = self._trace_event_count
+            tracer_callback_time_ms = self._tracer_callback_time_ms
+            sample_count = len(self._resource_samples)
+        runtime_ms = 0.0
+        if self._run_started_perf is not None:
+            finished_perf = self._run_finished_perf if self._run_finished_perf is not None else time.perf_counter()
+            runtime_ms = max((finished_perf - self._run_started_perf) * 1000.0, 0.0)
+        return {
+            "run_id": self.run_id,
+            "run_name": self.run_name,
+            "scenario_kind": self.scenario_kind,
+            "hardware_profile": self.hardware_profile,
+            "trace_events": trace_event_count,
+            "functions_seen": function_count,
+            "files_seen": files_seen,
+            "resource_samples": sample_count,
+            "instrumented_runtime_ms": runtime_ms,
+            "sqlite_write_time_ms": self._sqlite_write_time_ms,
+            "trace_overhead_estimate_ms": tracer_callback_time_ms,
+            "top_files_by_raw_ms": self.live_hot_files(limit=10),
+        }

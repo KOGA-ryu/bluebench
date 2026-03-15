@@ -31,10 +31,14 @@ class BackgroundAggregator:
             run_id,
             str(run_row["scenario_kind"]),
             str(run_row["hardware_profile"]),
+            run_row["project_root"],
         )
         previous_scores = self.storage.fetch_file_summary_map(previous_run_id) if previous_run_id else {}
         run_summary = self._run_summary(file_summaries, function_rows, previous_scores)
         self.storage.replace_staged_summaries(run_id, run_summary, function_summaries, file_summaries)
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _function_summaries(self, function_rows) -> list[dict[str, object]]:
         if not function_rows:
@@ -166,4 +170,3 @@ class BackgroundAggregator:
             "biggest_score_deltas": deltas[: self.top_n],
             "failure_count": failure_count,
         }
-

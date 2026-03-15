@@ -39,6 +39,8 @@ class GraphBridge(QObject):
         self.metadata_state: dict[str, bool] = {}
         self.loaded_children: dict[str, int] = {}
         self.parent_index: dict[str, str] = {}
+        self.active_run_id: str | None = None
+        self.file_compute_context: dict[str, dict[str, object]] = {}
 
     @Slot(result="QVariant")
     def sendGraph(self) -> dict[str, object]:
@@ -79,6 +81,15 @@ class GraphBridge(QObject):
         self.parent_index.clear()
         invalidate_layout_cache()
         self.current_graph_view = {"nodes": [], "reserved_regions": [], "grid_mode": False}
+
+    def set_active_run_context(self, run_id: str | None, file_compute_context: dict[str, dict[str, object]]) -> None:
+        self.active_run_id = run_id if run_id else None
+        self.file_compute_context = {
+            Path(str(file_path)).as_posix(): dict(values)
+            for file_path, values in file_compute_context.items()
+        }
+        if self.project_tree is not None:
+            self._refresh_layout()
 
     @Slot(str)
     def setLayout(self, layout_mode: str) -> None:
@@ -251,7 +262,70 @@ class GraphBridge(QObject):
             node["metadata_expanded"] = self.metadata_state.get(node_id, False)
             if node.get("type") == "folder":
                 node["loaded_children"] = self.loaded_children.get(node_id, DEFAULT_BATCH_SIZE)
+        for root in roots:
+            self._apply_compute_overlay(root)
         return roots
+
+    def _apply_compute_overlay(self, node: dict[str, object]) -> tuple[bool, float, float, float | None]:
+        children = node.get("children", [])
+        node_type = str(node.get("type") or "")
+        if node_type == "file":
+            file_path = Path(str(node.get("file_path") or "")).as_posix()
+            compute_entry = self.file_compute_context.get(file_path)
+            if compute_entry is None:
+                node["display_compute_available"] = False
+                node["display_compute_tier"] = None
+                node["display_compute_score"] = None
+                node["display_compute_tally"] = None
+                node["display_compute_delta"] = None
+                node["display_external_summary"] = None
+                return False, 0.0, 0.0, None
+            score = float(compute_entry.get("compute_score") or 0.0)
+            tally = float(compute_entry.get("compute_tally") or score)
+            delta = compute_entry.get("compute_delta")
+            node["display_compute_available"] = True
+            node["display_compute_tier"] = int(compute_entry.get("compute_tier") or 3)
+            node["display_compute_score"] = round(score, 1)
+            node["display_compute_tally"] = round(tally, 1)
+            node["display_compute_delta"] = round(float(delta), 1) if isinstance(delta, (int, float)) else None
+            node["display_external_summary"] = compute_entry.get("external_summary")
+            return True, score, tally, float(delta) if isinstance(delta, (int, float)) else None
+
+        has_compute = False
+        max_score = 0.0
+        total_tally = 0.0
+        total_delta = 0.0
+        delta_count = 0
+        top_external_summary: str | None = None
+        if isinstance(children, list):
+            for child in children:
+                child_has_compute, child_score, child_tally, child_delta = self._apply_compute_overlay(child)
+                if not child_has_compute:
+                    continue
+                has_compute = True
+                max_score = max(max_score, child_score)
+                total_tally += child_tally
+                if child_delta is not None:
+                    total_delta += child_delta
+                    delta_count += 1
+                if top_external_summary is None and isinstance(child.get("display_external_summary"), str):
+                    top_external_summary = str(child.get("display_external_summary"))
+
+        node["display_compute_available"] = has_compute
+        if not has_compute:
+            node["display_compute_tier"] = None
+            node["display_compute_score"] = None
+            node["display_compute_tally"] = None
+            node["display_compute_delta"] = None
+            node["display_external_summary"] = None
+            return False, 0.0, 0.0, None
+
+        node["display_compute_tier"] = 9 if max_score >= 67 else 6 if max_score >= 34 else 3
+        node["display_compute_score"] = round(max_score, 1)
+        node["display_compute_tally"] = round(total_tally, 1)
+        node["display_compute_delta"] = round(total_delta, 1) if delta_count else None
+        node["display_external_summary"] = top_external_summary
+        return True, max_score, total_tally, total_delta if delta_count else None
 
     def _lookup_display_node(self, node_id: str) -> dict[str, object] | None:
         for node in self._walk_tree(self._root_children()):

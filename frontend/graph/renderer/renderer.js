@@ -250,9 +250,8 @@
     });
 
     const metadataToggle = document.createElement("button");
-    metadataToggle.className = "node-button";
+    metadataToggle.className = "node-button metadata-toggle";
     metadataToggle.textContent = "i";
-    metadataToggle.style.alignSelf = "flex-end";
     metadataToggle.addEventListener("click", (event) => {
       event.stopPropagation();
       if (window.graphBridge && typeof window.graphBridge.toggleMetadata === "function") {
@@ -278,13 +277,15 @@
       tally,
       metadataPanel,
       loadMore,
+      metadataToggle,
     };
     return element;
   }
 
   function syncNodeElement(element, node, nodeMap) {
     const refs = element._refs;
-    const tier = Number(node.compute_tier || 3);
+    const hasMeasuredCompute = Boolean(node.display_compute_available);
+    const tier = hasMeasuredCompute ? Number(node.display_compute_tier || 3) : null;
     const hasChildren = Number(node.child_count || 0) > 0;
     const canExpand = node.type === "folder" && hasChildren;
     const hasMore = node.type === "folder" && Number(node.loaded_children || 0) < Number(node.child_count || 0);
@@ -311,9 +312,12 @@
     refs.collapseButton.disabled = !canExpand;
     refs.expandButton.disabled = node.type === "file" ? false : !canExpand;
     refs.expandButton.textContent = node.type === "file" ? ">" : "+";
-    refs.tierDot.style.background = TIER_COLORS[tier] || TIER_COLORS[3];
-    refs.tierLabel.textContent = `Tier ${tier}`;
-    refs.tally.textContent = `Tally ${Number(node.compute_tally || 0)}`;
+    refs.metadataToggle.textContent = node.metadata_expanded ? "×" : "i";
+    refs.tierDot.style.background = tier ? (TIER_COLORS[tier] || TIER_COLORS[3]) : "#3a3a44";
+    refs.tierLabel.textContent = tier ? `Tier ${tier}` : "No run";
+    refs.tally.textContent = hasMeasuredCompute
+      ? `Score ${Number(node.display_compute_score || 0).toFixed(1)}`
+      : "Neutral";
     if (!node.metadata_expanded) {
       refs.metadataPanel.scrollTop = 0;
     }
@@ -327,15 +331,28 @@
       .filter(([, count]) => count > 0)
       .map(([label, count]) => `<div>${escapeHtml(label)}: ${count}</div>`)
       .join("");
+    const computeLines = hasMeasuredCompute
+      ? [
+        `<div>Compute Tier: ${tier}</div>`,
+        `<div>Compute Score: ${Number(node.display_compute_score || 0).toFixed(1)}</div>`,
+        `<div>Compute Tally: ${Number(node.display_compute_tally || 0).toFixed(1)}</div>`,
+        (node.display_compute_delta !== null && node.display_compute_delta !== undefined)
+          ? `<div>Delta: ${Number(node.display_compute_delta).toFixed(1).replace(/^(-?)/, (_, sign) => sign === "-" ? "-" : "+")}</div>`
+          : "",
+        node.display_external_summary
+          ? `<div>External: ${escapeHtml(String(node.display_external_summary))}</div>`
+          : "",
+      ]
+      : ["<div>Compute: no active run selected</div>"];
     refs.metadataPanel.innerHTML = `
       <div>Type: ${escapeHtml(node.type || "")}</div>
-      <div>Compute tier: ${tier}</div>
-      <div>Compute tally: ${Number(node.compute_tally || 0)}</div>
+      ${computeLines.join("")}
       <div>Children: ${Number(node.child_count || 0)}</div>
       <div>Path: ${escapeHtml(node.file_path || node.id || "")}</div>
       ${relationshipLines}
     `;
     refs.loadMore.hidden = !hasMore;
+    refs.metadataPanel.hidden = !node.metadata_expanded;
   }
 
   function patchContainer(selection, nodes, nodeMap) {

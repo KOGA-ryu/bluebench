@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sys
+from datetime import datetime
 from collections.abc import Callable
 from pathlib import Path
 
@@ -9,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtCore import QRect, QRegularExpression, QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QRect, QProcess, QRegularExpression, QSettings, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QTextCharFormat, QTextCursor, QSyntaxHighlighter
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -20,7 +22,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
+    QLineEdit,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -58,7 +62,18 @@ except ModuleNotFoundError:
     from core.project_manager.project_discovery import ProjectDiscovery
     from core.project_manager.project_loader import ProjectLoader
 
+try:
+    from backend.instrumentation import InstrumentationStorage
+except ModuleNotFoundError:
+    from instrumentation import InstrumentationStorage
+
+try:
+    from backend.stress_engine import StressEngineWindow
+except ModuleNotFoundError:
+    from stress_engine import StressEngineWindow
+
 GRAPH_HTML_PATH = PROJECT_ROOT / "frontend" / "graph" / "renderer" / "bluebench_graph.html"
+INSTRUMENTATION_DB_PATH = PROJECT_ROOT / ".bluebench" / "instrumentation.sqlite3"
 DEV_ROOT = Path("~/dev").expanduser()
 APP_STYLESHEET = """
 QWidget {
@@ -603,6 +618,8 @@ class NodeInspectorWindow(QMainWindow):
         self.open_file_inspector = open_file_inspector
         self.layout_locked = False
         self.current_source_lines: list[str] = []
+        self.current_file_compute: dict[str, object] = {}
+        self.current_function_compute: list[dict[str, object]] = []
 
         self.setFixedSize(460, 640)
         self.setStyleSheet(
@@ -735,6 +752,12 @@ class NodeInspectorWindow(QMainWindow):
         if isinstance(call_path_total_compute, int):
             meta_parts.append(f"call path compute {call_path_total_compute}")
         self.header_meta.setText(" · ".join(meta_parts))
+        self.current_file_compute = dict(node.get("file_compute") or {}) if isinstance(node.get("file_compute"), dict) else {}
+        self.current_function_compute = [
+            dict(entry)
+            for entry in node.get("function_compute", [])
+            if isinstance(entry, dict)
+        ] if isinstance(node.get("function_compute"), list) else []
 
         self._update_outline(node)
         loaded = self._update_code_viewer(
@@ -783,10 +806,18 @@ class NodeInspectorWindow(QMainWindow):
 
         self.outline_selector.addItem("Jump to definition...")
 
+        function_lookup = self._function_compute_lookup()
+
         for outline_node in outline_nodes:
             display_name = str(outline_node.get("name") or "")
             if outline_node.get("type") == "function":
                 display_name = f"{display_name}()"
+            compute_entry = function_lookup.get(str(outline_node.get("name") or ""))
+            if compute_entry is not None:
+                display_name = (
+                    f"{display_name} · {int(round(float(compute_entry.get('normalized_compute_score') or 0.0)))}"
+                    f" · {float(compute_entry.get('total_time_ms') or 0.0):.1f} ms"
+                )
             self.outline_selector.addItem(display_name, int(outline_node.get("line_number") or 0))
 
         self.outline_selector.setCurrentIndex(0)
@@ -901,13 +932,39 @@ class NodeInspectorWindow(QMainWindow):
 
         compute_info = CollapsibleSection("Compute data")
         compute_info.setContentVisible(True)
-        for line in [
-            f"Compute score: {node.get('compute_score') if node.get('compute_score') is not None else '-'}",
-            f"Line start: {node.get('line_start') or '-'}",
-            f"Line end: {node.get('line_end') or '-'}",
-            f"Call path total compute: {node.get('call_path_total_compute') if node.get('call_path_total_compute') is not None else '-'}",
-        ]:
+        file_compute_lines = self._file_compute_lines(node)
+        for line in file_compute_lines:
             compute_info.content_layout.addWidget(QLabel(line))
+
+        function_rankings = CollapsibleSection("Function ranking")
+        function_rankings.setContentVisible(True)
+        if not self.current_function_compute:
+            function_rankings.content_layout.addWidget(QLabel("No function compute for the active run"))
+        else:
+            for entry in self.current_function_compute:
+                label = QLabel(
+                    "\n".join(
+                        [
+                            str(entry.get("display_name") or "-"),
+                            (
+                                f"Score {float(entry.get('normalized_compute_score') or 0.0):.1f} · "
+                                f"self {float(entry.get('self_time_ms') or 0.0):.1f} ms · "
+                                f"total {float(entry.get('total_time_ms') or 0.0):.1f} ms · "
+                                f"calls {int(entry.get('call_count') or 0)}"
+                            ),
+                            (
+                                f"Exceptions {int(entry.get('exception_count') or 0)}"
+                                + (
+                                    f" · last {entry.get('last_exception_type')}"
+                                    if entry.get("last_exception_type")
+                                    else ""
+                                )
+                            ),
+                        ]
+                    )
+                )
+                label.setWordWrap(True)
+                function_rankings.content_layout.addWidget(label)
 
         notes_section = CollapsibleSection("Notes")
         notes_section.setContentVisible(True)
@@ -931,8 +988,81 @@ class NodeInspectorWindow(QMainWindow):
         for title, file_paths, _getter, _recurse in self._get_relationship_groups(str(node.get("file_path") or "")):
             summary_section.content_layout.addWidget(QLabel(f"{title}: {len(file_paths)}"))
 
-        for section in [file_info, compute_info, notes_section, summary_section]:
+        external_section = CollapsibleSection("External pressure")
+        external_section.setContentVisible(True)
+        external_lines = self._external_pressure_lines()
+        if not external_lines:
+            external_section.content_layout.addWidget(QLabel("No external pressure data for the active run"))
+        else:
+            for line in external_lines:
+                external_section.content_layout.addWidget(QLabel(line))
+
+        for section in [file_info, compute_info, function_rankings, notes_section, summary_section, external_section]:
             self.metadata_layout.insertWidget(self.metadata_layout.count() - 1, section)
+
+    def _file_compute_lines(self, node: dict[str, object]) -> list[str]:
+        if not self.current_file_compute:
+            return [
+                "No active run compute selected",
+                f"Line start: {node.get('line_start') or '-'}",
+                f"Line end: {node.get('line_end') or '-'}",
+                f"Call path total compute: {node.get('call_path_total_compute') if node.get('call_path_total_compute') is not None else '-'}",
+            ]
+
+        lines = [
+            f"Compute tier: {int(self.current_file_compute.get('compute_tier') or 3)}",
+            f"Normalized score: {float(self.current_file_compute.get('normalized_compute_score') or 0.0):.1f}",
+            f"Total self time: {float(self.current_file_compute.get('total_self_time_ms') or 0.0):.1f} ms",
+            f"Total time: {float(self.current_file_compute.get('total_time_ms') or 0.0):.1f} ms",
+            f"Call count: {int(self.current_file_compute.get('call_count') or 0)}",
+            f"Exception count: {int(self.current_file_compute.get('exception_count') or 0)}",
+        ]
+        delta = self.current_file_compute.get("delta")
+        if isinstance(delta, (int, float)):
+            lines.append(f"Delta vs previous: {delta:+.1f}")
+        lines.extend(
+            [
+                f"Line start: {node.get('line_start') or '-'}",
+                f"Line end: {node.get('line_end') or '-'}",
+                f"Call path total compute: {node.get('call_path_total_compute') if node.get('call_path_total_compute') is not None else '-'}",
+            ]
+        )
+        return lines
+
+    def _function_compute_lookup(self) -> dict[str, dict[str, object]]:
+        lookup: dict[str, dict[str, object]] = {}
+        for entry in self.current_function_compute:
+            raw_symbol = str(entry.get("symbol_name") or "")
+            if raw_symbol:
+                lookup[raw_symbol] = entry
+            fallback = raw_symbol.split(".")[-1] if raw_symbol else ""
+            if fallback and fallback not in lookup:
+                lookup[fallback] = entry
+        return lookup
+
+    def _external_pressure_lines(self) -> list[str]:
+        summary = self.current_file_compute.get("external_pressure_summary")
+        if not isinstance(summary, dict):
+            return []
+        buckets = summary.get("external_buckets")
+        if not isinstance(buckets, dict):
+            return []
+        ordered = sorted(
+            (
+                (bucket_name, bucket_values)
+                for bucket_name, bucket_values in buckets.items()
+                if isinstance(bucket_values, dict)
+            ),
+            key=lambda item: -float(item[1].get("total_time_ms") or 0.0),
+        )
+        return [
+            (
+                f"{bucket_name.replace('external:', '')}   "
+                f"{float(bucket_values.get('total_time_ms') or 0.0):.1f} ms"
+            )
+            for bucket_name, bucket_values in ordered
+            if float(bucket_values.get("total_time_ms") or 0.0) > 0.0
+        ]
 
     def _get_relationship_groups(
         self,
@@ -1245,12 +1375,406 @@ def create_navigator_panel(title: str, width: int) -> tuple[QWidget, QLabel, QTr
     return panel, body_label, project_list, module_list
 
 
+class InstrumentedScriptRunnerPanel(QWidget):
+    def __init__(self, project_root_provider: Callable[[], Path | None], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.project_root_provider = project_root_provider
+        self.storage = InstrumentationStorage(INSTRUMENTATION_DB_PATH)
+        self.storage.initialize_schema()
+        self.process = QProcess(self)
+        self.process.setWorkingDirectory(str(PROJECT_ROOT))
+        self.process.readyReadStandardOutput.connect(self._drain_process_output)
+        self.process.readyReadStandardError.connect(self._drain_process_output)
+        self.process.finished.connect(self._handle_process_finished)
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(500)
+        self.refresh_timer.timeout.connect(self._refresh_state)
+        self.current_run_id: str | None = None
+        self.current_run_name: str | None = None
+        self.current_script_path: Path | None = None
+        self.current_args: list[str] = []
+        self.current_started_at: str | None = None
+        self.stop_timer: QTimer | None = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        title = QLabel("Instrumented Script Runner")
+        title.setStyleSheet("font-size: 16px; font-weight: 700;")
+
+        script_row = QWidget()
+        script_row_layout = QHBoxLayout(script_row)
+        script_row_layout.setContentsMargins(0, 0, 0, 0)
+        script_row_layout.setSpacing(6)
+        script_label = QLabel("Script Path:")
+        self.script_path_input = QLineEdit()
+        self.script_path_input.setPlaceholderText("tests/fixtures/instrumentation/recursive_workload.py")
+        browse_button = QPushButton("Browse")
+        browse_button.clicked.connect(self._browse_script)
+        script_row_layout.addWidget(script_label)
+        script_row_layout.addWidget(self.script_path_input, 1)
+        script_row_layout.addWidget(browse_button)
+
+        args_row = QWidget()
+        args_row_layout = QHBoxLayout(args_row)
+        args_row_layout.setContentsMargins(0, 0, 0, 0)
+        args_row_layout.setSpacing(6)
+        args_label = QLabel("Args:")
+        self.args_input = QLineEdit()
+        self.args_input.setPlaceholderText("--depth 12")
+        args_row_layout.addWidget(args_label)
+        args_row_layout.addWidget(self.args_input, 1)
+
+        controls_row = QWidget()
+        controls_layout = QHBoxLayout(controls_row)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        self.start_button = QPushButton("Start Run")
+        self.stop_button = QPushButton("Stop Run")
+        self.stop_button.setEnabled(False)
+        self.start_button.clicked.connect(self._start_run)
+        self.stop_button.clicked.connect(self._stop_run)
+        controls_layout.addWidget(self.start_button)
+        controls_layout.addWidget(self.stop_button)
+        controls_layout.addStretch()
+
+        self.metadata_block = QLabel()
+        self.metadata_block.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.metadata_block.setStyleSheet("border: 1px solid #1a1a22; padding: 8px;")
+
+        self.hot_files_list = QTreeWidget()
+        self.hot_files_list.setHeaderLabels(["File", "Score", "Raw ms", "Calls"])
+        self.hot_files_list.setRootIsDecorated(False)
+
+        self.cpu_memory_block = QLabel("CPU: -\nRSS: -")
+        self.cpu_memory_block.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.cpu_memory_block.setStyleSheet("border: 1px solid #1a1a22; padding: 8px;")
+
+        self.summary_block = QPlainTextEdit()
+        self.summary_block.setReadOnly(True)
+        self.summary_block.setMaximumBlockCount(200)
+        self.summary_block.setPlainText("No completed run.")
+
+        self.debug_toggle = QToolButton()
+        self.debug_toggle.setText("Debug Details")
+        self.debug_toggle.setCheckable(True)
+        self.debug_toggle.setChecked(False)
+        self.debug_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.debug_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.debug_toggle.clicked.connect(self._toggle_debug_drawer)
+
+        self.debug_details = QPlainTextEdit()
+        self.debug_details.setReadOnly(True)
+        self.debug_details.setVisible(False)
+        self.debug_details.setMaximumBlockCount(400)
+
+        layout.addWidget(title)
+        layout.addWidget(script_row)
+        layout.addWidget(args_row)
+        layout.addWidget(controls_row)
+        layout.addWidget(QLabel("Run Metadata"))
+        layout.addWidget(self.metadata_block)
+        layout.addWidget(QLabel("Live Hot Files"))
+        layout.addWidget(self.hot_files_list, 1)
+        layout.addWidget(QLabel("CPU / Memory"))
+        layout.addWidget(self.cpu_memory_block)
+        layout.addWidget(QLabel("Run Summary"))
+        layout.addWidget(self.summary_block)
+        layout.addWidget(self.debug_toggle)
+        layout.addWidget(self.debug_details)
+        self.setStyleSheet("border: 1px solid #1a1a22; border-radius: 10px;")
+        self._reset_panels()
+
+    def _browse_script(self) -> None:
+        starting_dir = str(self.project_root_provider() or PROJECT_ROOT)
+        script_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Select Python Script",
+            starting_dir,
+            "Python Files (*.py)",
+        )
+        if script_path:
+            self.script_path_input.setText(script_path)
+
+    def _start_run(self) -> None:
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            return
+        script_path = Path(self.script_path_input.text().strip()).expanduser()
+        if not script_path.is_absolute():
+            script_path = (self.project_root_provider() or PROJECT_ROOT) / script_path
+        script_path = script_path.resolve()
+        if not script_path.is_file():
+            QMessageBox.warning(self, "Invalid Script", "Select a valid Python script to run.")
+            return
+
+        try:
+            parsed_args = shlex.split(self.args_input.text().strip())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Args", str(exc))
+            return
+
+        project_root = self._resolve_project_root(script_path)
+        run_name = f"{script_path.stem}_{datetime.now().strftime('%H%M%S')}"
+        self.current_run_name = run_name
+        self.current_run_id = f"{script_path.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        self.current_script_path = script_path
+        self.current_args = parsed_args
+        self.current_started_at = datetime.now().isoformat()
+        self._reset_panels()
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.metadata_block.setText(self._metadata_text("starting", 0.0))
+
+        process_args = [
+            "-m",
+            "backend.instrumentation.script_runner",
+            "--database",
+            str(INSTRUMENTATION_DB_PATH),
+            "--project-root",
+            str(project_root),
+            "--script-path",
+            str(script_path),
+            "--run-name",
+            run_name,
+            "--scenario-kind",
+            "instrumented_script",
+            "--hardware-profile",
+            f"{sys.platform}:{platform_string()}",
+            "--",
+            *parsed_args,
+        ]
+        self.process.start(sys.executable, process_args)
+        if not self.process.waitForStarted(3000):
+            QMessageBox.warning(self, "Runner Failed", "Failed to start instrumented run.")
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            return
+
+        self.current_run_id = self._read_latest_run_id(run_name)
+        self.refresh_timer.start()
+
+    def _stop_run(self) -> None:
+        if self.process.state() == QProcess.ProcessState.NotRunning:
+            return
+        self.stop_button.setEnabled(False)
+        self.metadata_block.setText(self._metadata_text("stopping", self._current_elapsed_seconds()))
+        self.process.terminate()
+        if self.stop_timer is not None:
+            self.stop_timer.stop()
+        self.stop_timer = QTimer(self)
+        self.stop_timer.setSingleShot(True)
+        self.stop_timer.timeout.connect(self._force_kill_process)
+        self.stop_timer.start(3000)
+
+    def _force_kill_process(self) -> None:
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            self.process.kill()
+
+    def _handle_process_finished(self, _exit_code: int, _exit_status) -> None:
+        self.refresh_timer.stop()
+        if self.stop_timer is not None:
+            self.stop_timer.stop()
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self._refresh_state()
+
+    def _drain_process_output(self) -> None:
+        _ = bytes(self.process.readAllStandardOutput())
+        _ = bytes(self.process.readAllStandardError())
+
+    def _refresh_state(self) -> None:
+        if not self.current_run_id:
+            return
+        live_state = self.storage.fetch_live_run_state(self.current_run_id)
+        if live_state is None:
+            if self.current_run_name:
+                resolved_run_id = self.storage.fetch_latest_run_id_by_name(self.current_run_name)
+                if resolved_run_id and resolved_run_id != self.current_run_id:
+                    self.current_run_id = resolved_run_id
+                    live_state = self.storage.fetch_live_run_state(self.current_run_id)
+            if live_state is None:
+                self.metadata_block.setText(self._metadata_text("pending", self._current_elapsed_seconds()))
+                return
+        parsed_args = json.loads(str(live_state["parsed_args_json"]))
+        elapsed_seconds = float(live_state["elapsed_seconds"])
+        self.metadata_block.setText(
+            "\n".join(
+                [
+                    f"Run Name: {self.current_run_id}",
+                    f"Script: {live_state['script_path']}",
+                    f"Args: {' '.join(parsed_args) if parsed_args else '(none)'}",
+                    f"Started: {str(live_state['started_at'])}",
+                    f"Elapsed: {self._format_elapsed(elapsed_seconds)}",
+                    f"Status: {live_state['status']}",
+                ]
+            )
+        )
+        self.cpu_memory_block.setText(
+            f"CPU: {float(live_state['cpu_percent']):.1f}%\nRSS: {float(live_state['rss_mb']):.1f} MB"
+        )
+        self._populate_hot_files()
+        self._populate_summary()
+        self._populate_debug(live_state)
+
+    def _populate_hot_files(self) -> None:
+        self.hot_files_list.clear()
+        if not self.current_run_id:
+            return
+        rows = self.storage.fetch_live_file_rows(self.current_run_id)
+        ordered_rows = sorted(
+            rows,
+            key=lambda row: (-float(row["rolling_score"]), -float(row["raw_ms"]), str(row["file_path"])),
+        )[:10]
+        for row in ordered_rows:
+            item = QTreeWidgetItem(
+                [
+                    Path(str(row["file_path"])).name,
+                    f"{float(row['rolling_score']):.1f}",
+                    f"{float(row['raw_ms']):.1f}",
+                    f"{int(row['call_count'])}",
+                ]
+            )
+            self.hot_files_list.addTopLevelItem(item)
+
+    def _populate_summary(self) -> None:
+        if not self.current_run_id:
+            return
+        run_summary = self.storage.fetch_run_summary(self.current_run_id)
+        file_summaries = self.storage.fetch_file_summaries(self.current_run_id, limit=10)
+        if run_summary is None:
+            self.summary_block.setPlainText("Summary pending aggregation.")
+            return
+        hottest_files = json.loads(str(run_summary["hottest_files_json"]))
+        deltas = json.loads(str(run_summary["biggest_score_deltas_json"]))
+        lines = ["Hottest Files"]
+        for row in hottest_files:
+            lines.append(
+                f"- {Path(str(row['file_path'])).name}: {float(row['rolling_score']):.1f} rolling, {float(row['total_time_ms']):.1f} ms"
+            )
+        if file_summaries:
+            lines.append("")
+            lines.append("File Summaries")
+            for row in file_summaries:
+                lines.append(
+                    f"- {row['file_path']}: score {float(row['normalized_compute_score']):.1f}, failures {int(row['exception_count'])}"
+                )
+        lines.append("")
+        lines.append("Biggest Deltas")
+        if deltas:
+            for row in deltas:
+                lines.append(f"- {row['file_path']}: {float(row['score_delta']):+.1f}")
+        else:
+            lines.append("- none")
+        lines.append("")
+        lines.append(f"Failures: {int(run_summary['failure_count'])}")
+        self.summary_block.setPlainText("\n".join(lines))
+
+    def _populate_debug(self, live_state) -> None:
+        if not self.current_run_id:
+            return
+        lines = [
+            f"Aggregation Status: {live_state['aggregation_status']}",
+            f"Raw Function Row Count: {int(live_state['raw_function_row_count'])}",
+            f"Sampler Sample Count: {int(live_state['sampler_sample_count'])}",
+            f"Final Function Summary Count: {self.storage.fetch_function_summary_count(self.current_run_id)}",
+            "",
+            "External Buckets:",
+        ]
+        external_buckets = json.loads(str(live_state["external_buckets_json"]))
+        if external_buckets:
+            for row in external_buckets:
+                lines.append(
+                    f"- {row['bucket_name']}: {float(row['total_time_ms']):.1f} ms / {int(row['call_count'])} calls"
+                )
+        else:
+            lines.append("- none")
+        stdout_tail = str(live_state["stdout_tail"] or "")
+        stderr_tail = str(live_state["stderr_tail"] or "")
+        if stdout_tail:
+            lines.extend(["", "Stdout:", stdout_tail])
+        if stderr_tail:
+            lines.extend(["", "Stderr:", stderr_tail])
+        self.debug_details.setPlainText("\n".join(lines))
+
+    def _toggle_debug_drawer(self) -> None:
+        expanded = self.debug_toggle.isChecked()
+        self.debug_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.debug_details.setVisible(expanded)
+
+    def _metadata_text(self, status: str, elapsed_seconds: float) -> str:
+        script_path = str(self.current_script_path) if self.current_script_path is not None else "-"
+        parsed_args = " ".join(self.current_args) if self.current_args else "(none)"
+        started = self.current_started_at or "-"
+        return "\n".join(
+            [
+                f"Run Name: {self.current_run_id or '-'}",
+                f"Script: {script_path}",
+                f"Args: {parsed_args}",
+                f"Started: {started}",
+                f"Elapsed: {self._format_elapsed(elapsed_seconds)}",
+                f"Status: {status}",
+            ]
+        )
+
+    def _reset_panels(self) -> None:
+        self.hot_files_list.clear()
+        self.cpu_memory_block.setText("CPU: -\nRSS: -")
+        self.summary_block.setPlainText("No completed run.")
+        self.debug_details.setPlainText("")
+
+    def _resolve_project_root(self, script_path: Path) -> Path:
+        current_project = self.project_root_provider()
+        if current_project is not None:
+            try:
+                script_path.relative_to(current_project)
+                return current_project
+            except ValueError:
+                pass
+        return script_path.parent
+
+    def _read_latest_run_id(self, run_name: str) -> str:
+        run_id = self.storage.fetch_latest_run_id_by_name(run_name)
+        return run_id or (self.current_run_id or run_name)
+
+    def _current_elapsed_seconds(self) -> float:
+        if self.current_started_at is None:
+            return 0.0
+        try:
+            started = datetime.fromisoformat(self.current_started_at)
+        except ValueError:
+            return 0.0
+        return max((datetime.now(started.tzinfo) - started).total_seconds(), 0.0)
+
+    def _format_elapsed(self, elapsed_seconds: float) -> str:
+        total_seconds = max(int(elapsed_seconds), 0)
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def shutdown(self) -> None:
+        self.refresh_timer.stop()
+        if self.stop_timer is not None:
+            self.stop_timer.stop()
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            self.process.terminate()
+            if not self.process.waitForFinished(1000):
+                self.process.kill()
+                self.process.waitForFinished(1000)
+
+
+def platform_string() -> str:
+    return sys.platform
+
+
 class BlueBenchWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("(╯°□°)╯︵ ┻━┻ Blue Bench")
         self.resize(1200, 700)
         self.settings = QSettings("BlueBench", "BlueBenchApp")
+        self.storage = InstrumentationStorage(INSTRUMENTATION_DB_PATH)
+        self.storage.initialize_schema()
         self.graph_bridge = GraphBridge()
         self.project_discovery = ProjectDiscovery(DEV_ROOT)
         self.project_loader = ProjectLoader(
@@ -1258,8 +1782,10 @@ class BlueBenchWindow(QMainWindow):
             PythonRepoScanner,
         )
         self.current_project_path: Path | None = None
+        self.active_run_id: str | None = None
         self.node_windows: dict[str, NodeInspectorWindow] = {}
         self._inspector_open_count = 0
+        self.stress_engine_window: StressEngineWindow | None = None
 
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
@@ -1282,11 +1808,23 @@ class BlueBenchWindow(QMainWindow):
         layout_controls_layout.setSpacing(8)
 
         layout_label = QLabel("Explorer")
+        run_label = QLabel("Run")
+        self.run_selector = QComboBox()
+        self.run_selector.setMinimumWidth(320)
+        self.run_selector.currentIndexChanged.connect(self._handle_run_selection)
+        self.refresh_runs_button = QPushButton("Refresh Runs")
+        self.refresh_runs_button.clicked.connect(self._refresh_run_selector)
         self.export_button = QPushButton("Export Layout")
         self.export_button.clicked.connect(self._export_layout_document)
+        self.stress_engine_button = QPushButton("Stress Engine")
+        self.stress_engine_button.clicked.connect(self._open_stress_engine)
 
         layout_controls_layout.addWidget(layout_label)
         layout_controls_layout.addStretch()
+        layout_controls_layout.addWidget(run_label)
+        layout_controls_layout.addWidget(self.run_selector)
+        layout_controls_layout.addWidget(self.refresh_runs_button)
+        layout_controls_layout.addWidget(self.stress_engine_button)
         layout_controls_layout.addWidget(self.export_button)
 
         graph_view = QWebEngineView()
@@ -1313,6 +1851,8 @@ class BlueBenchWindow(QMainWindow):
         main_layout.addWidget(self.main_splitter)
 
         self.setCentralWidget(central_widget)
+        self._refresh_run_selector()
+        self._restore_active_run_selection()
         self._populate_projects()
         self.project_list.itemClicked.connect(self._load_selected_project)
         self.graph_bridge.nodeSelectionChanged.connect(self._update_inspector)
@@ -1336,10 +1876,12 @@ class BlueBenchWindow(QMainWindow):
         file_paths = self.project_loader.load_project(project_path)
         self.current_project_path = project_path
         self._populate_module_tree(file_paths)
+        self._refresh_run_selector()
         self.graph_bridge.set_project_tree(
             project_path,
             self.graph_bridge.graph_manager.build_codebase_tree(project_path, file_paths),
         )
+        self._apply_active_run_context()
         self._refresh_renderer()
 
     def _populate_module_tree(self, file_paths: list[str]) -> None:
@@ -1437,6 +1979,18 @@ class BlueBenchWindow(QMainWindow):
             """
         )
 
+    def _open_stress_engine(self) -> None:
+        if self.stress_engine_window is None:
+            self.stress_engine_window = StressEngineWindow(lambda: self.current_project_path)
+            self.stress_engine_window.closed.connect(self._clear_stress_engine_window)
+        self.stress_engine_window.show()
+        self.stress_engine_window.raise_()
+        self.stress_engine_window.activateWindow()
+
+    def _clear_stress_engine_window(self) -> None:
+        self._refresh_run_selector()
+        self.stress_engine_window = None
+
     def _update_inspector(self, payload: dict) -> None:
         node = payload.get("node") or payload
         if not node:
@@ -1448,9 +2002,10 @@ class BlueBenchWindow(QMainWindow):
         if not node_id:
             return
 
+        inspector_payload = self._build_inspector_payload(node, payload.get("preferred_tab"))
         existing_window = self.node_windows.get(node_id)
         if existing_window is not None:
-            existing_window.refresh(node)
+            existing_window.refresh(inspector_payload)
             existing_window.raise_()
             existing_window.activateWindow()
             return
@@ -1458,7 +2013,7 @@ class BlueBenchWindow(QMainWindow):
         inspector_window = NodeInspectorWindow(
             self.graph_bridge.graph_manager,
             self.current_project_path,
-            node,
+            inspector_payload,
             self._remove_node_window,
             self.open_inspector_from_explorer,
         )
@@ -1482,17 +2037,21 @@ class BlueBenchWindow(QMainWindow):
         self._update_inspector(inspector_payload)
 
     def _build_inspector_payload(self, node: dict[str, object], preferred_tab: object = None) -> dict[str, object]:
+        file_path = str(node.get("file_path") or "")
         payload = {
             "id": node.get("id"),
             "name": node.get("name"),
             "type": node.get("type"),
-            "file_path": node.get("file_path"),
+            "file_path": file_path,
             "line_number": node.get("line_number"),
             "line_start": node.get("line_start"),
             "line_end": node.get("line_end"),
             "compute_score": node.get("compute_score"),
             "parent": node.get("parent"),
             "call_path_total_compute": node.get("call_path_total_compute"),
+            "active_run_id": self.active_run_id,
+            "file_compute": self.get_file_compute_for_run(self.active_run_id, file_path),
+            "function_compute": self.get_function_compute_for_run(self.active_run_id, file_path),
         }
         if isinstance(preferred_tab, str) and preferred_tab:
             payload["preferred_tab"] = preferred_tab
@@ -1519,8 +2078,179 @@ class BlueBenchWindow(QMainWindow):
         inspector_window.move(x, y)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.stress_engine_window is not None:
+            self.stress_engine_window.close()
         self.settings.setValue("splitterState", self.main_splitter.saveState())
         super().closeEvent(event)
+
+    def list_available_runs(self) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in self.storage.list_completed_runs(project_root=self.current_project_path)
+        ]
+
+    def get_active_run_id(self) -> str | None:
+        return self.active_run_id
+
+    def set_active_run_id(self, run_id: str | None) -> None:
+        normalized = run_id if run_id and self.storage.run_exists(run_id) else None
+        self.active_run_id = normalized
+        if normalized is None:
+            self.settings.remove("activeRunId")
+        else:
+            self.settings.setValue("activeRunId", normalized)
+        self._apply_active_run_context()
+        self._refresh_open_inspectors()
+
+    def get_previous_comparable_run(self, run_id: str | None) -> dict[str, object] | None:
+        if not run_id:
+            return None
+        run_row = self.storage.fetch_run(run_id)
+        if run_row is None:
+            return None
+        previous_run_id = self.storage.fetch_previous_comparable_run_id(
+            run_id,
+            str(run_row["scenario_kind"]),
+            str(run_row["hardware_profile"]),
+            run_row["project_root"],
+        )
+        if not previous_run_id:
+            return None
+        previous_row = self.storage.fetch_run(previous_run_id)
+        return dict(previous_row) if previous_row is not None else None
+
+    def get_file_compute_for_run(self, run_id: str | None, file_path: str) -> dict[str, object]:
+        if not run_id or not file_path:
+            return {}
+        row = self.storage.fetch_file_summary(run_id, file_path)
+        if row is None:
+            return {}
+        current_score = float(row["normalized_compute_score"])
+        delta: float | None = None
+        run_row = self.storage.fetch_run(run_id)
+        if run_row is not None:
+            previous_run_id = self.storage.fetch_previous_comparable_run_id(
+                run_id,
+                str(run_row["scenario_kind"]),
+                str(run_row["hardware_profile"]),
+                run_row["project_root"],
+            )
+            if previous_run_id:
+                previous_row = self.storage.fetch_file_summary(previous_run_id, file_path)
+                previous_score = float(previous_row["normalized_compute_score"]) if previous_row is not None else 0.0
+                delta = current_score - previous_score
+        external_summary = json.loads(str(row["external_pressure_summary"])) if row["external_pressure_summary"] else {}
+        return {
+            "file_path": str(row["file_path"]),
+            "normalized_compute_score": current_score,
+            "compute_tier": 9 if current_score >= 67 else 6 if current_score >= 34 else 3,
+            "compute_tally": current_score,
+            "total_self_time_ms": float(row["total_self_time_ms"]),
+            "total_time_ms": float(row["total_time_ms"]),
+            "call_count": int(row["call_count"]),
+            "exception_count": int(row["exception_count"]),
+            "rolling_score": float(row["rolling_score"]),
+            "delta": delta,
+            "external_pressure_summary": external_summary if isinstance(external_summary, dict) else {},
+        }
+
+    def get_function_compute_for_run(self, run_id: str | None, file_path: str) -> list[dict[str, object]]:
+        if not run_id or not file_path:
+            return []
+        function_compute: list[dict[str, object]] = []
+        for row in self.storage.fetch_function_summaries_for_file(run_id, file_path):
+            symbol_key = str(row["symbol_key"])
+            symbol_name = symbol_key.split("::", 1)[1] if "::" in symbol_key else str(row["display_name"])
+            function_compute.append(
+                {
+                    "symbol_key": symbol_key,
+                    "symbol_name": symbol_name,
+                    "display_name": str(row["display_name"]),
+                    "self_time_ms": float(row["self_time_ms"]),
+                    "total_time_ms": float(row["total_time_ms"]),
+                    "call_count": int(row["call_count"]),
+                    "exception_count": int(row["exception_count"]),
+                    "last_exception_type": row["last_exception_type"],
+                    "normalized_compute_score": float(row["normalized_compute_score"]),
+                }
+            )
+        return function_compute
+
+    def _refresh_run_selector(self) -> None:
+        selected_run_id = self.active_run_id
+        available_run_ids = {str(row["run_id"]) for row in self.list_available_runs()}
+        if selected_run_id and selected_run_id not in available_run_ids:
+            self.active_run_id = None
+            self.settings.remove("activeRunId")
+            selected_run_id = None
+        self.run_selector.blockSignals(True)
+        self.run_selector.clear()
+        self.run_selector.addItem("No Active Run", "")
+        for row in self.list_available_runs():
+            run_id = str(row["run_id"])
+            finished_at = str(row.get("finished_at") or row.get("started_at") or "")
+            label = f"{row['run_name']} · {row['scenario_kind']} · {finished_at}"
+            self.run_selector.addItem(label, run_id)
+        index = self.run_selector.findData(selected_run_id or "")
+        self.run_selector.setCurrentIndex(index if index >= 0 else 0)
+        self.run_selector.blockSignals(False)
+
+    def _restore_active_run_selection(self) -> None:
+        stored_run_id = self.settings.value("activeRunId")
+        if isinstance(stored_run_id, str) and stored_run_id and self.storage.run_exists(stored_run_id):
+            self.active_run_id = stored_run_id
+        else:
+            self.active_run_id = None
+        self._refresh_run_selector()
+
+    def _handle_run_selection(self) -> None:
+        selected_run_id = str(self.run_selector.currentData() or "").strip() or None
+        self.set_active_run_id(selected_run_id)
+
+    def _apply_active_run_context(self) -> None:
+        if not self.active_run_id:
+            self.graph_bridge.set_active_run_context(None, {})
+            self._refresh_renderer()
+            return
+        file_compute_context: dict[str, dict[str, object]] = {}
+        for row in self.storage.fetch_file_summaries(self.active_run_id, limit=None):
+            file_path = str(row["file_path"])
+            compute_entry = self.get_file_compute_for_run(self.active_run_id, file_path)
+            if not compute_entry:
+                continue
+            shallow_external = self._shallow_external_summary(compute_entry.get("external_pressure_summary"))
+            if shallow_external is not None:
+                compute_entry["external_summary"] = shallow_external
+            file_compute_context[file_path] = compute_entry
+        self.graph_bridge.set_active_run_context(self.active_run_id, file_compute_context)
+        self._refresh_renderer()
+
+    def _refresh_open_inspectors(self) -> None:
+        for node_id, window in list(self.node_windows.items()):
+            node = self.graph_bridge.graph_manager.get_node(node_id)
+            if node is None:
+                continue
+            preferred_tab = window.tabs.tabText(window.tabs.currentIndex())
+            window.refresh(self._build_inspector_payload(node, preferred_tab))
+
+    def _shallow_external_summary(self, summary: object) -> str | None:
+        if not isinstance(summary, dict):
+            return None
+        buckets = summary.get("external_buckets")
+        if not isinstance(buckets, dict):
+            return None
+        top_bucket_name = ""
+        top_bucket_ms = 0.0
+        for bucket_name, values in buckets.items():
+            if not isinstance(values, dict):
+                continue
+            total_time_ms = float(values.get("total_time_ms") or 0.0)
+            if total_time_ms > top_bucket_ms:
+                top_bucket_name = str(bucket_name).replace("external:", "")
+                top_bucket_ms = total_time_ms
+        if not top_bucket_name or top_bucket_ms <= 0.0:
+            return None
+        return f"{top_bucket_name} {top_bucket_ms:.0f} ms"
 
 def main() -> int:
     app = QApplication(sys.argv)
