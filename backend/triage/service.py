@@ -71,6 +71,7 @@ def generate_triage(
             "external_pressure": runtime_summary.get("external_pressure", []),
             "failures": runtime_summary.get("failures", {}),
             "regressions": runtime_summary.get("regressions", []),
+            "canonical_summary": runtime_summary.get("canonical_summary", {}),
         },
         "operational_risks": {
             "native_dependencies": [item["name"] for item in dependencies.get("native_modules", [])],

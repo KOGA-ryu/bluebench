@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from backend.reports import build_run_report, export_report_markdown
+
 
 def export_context_json(context_pack: dict[str, object], target_path: Path) -> Path:
     target_path = Path(target_path)
@@ -21,6 +23,12 @@ def export_context_markdown(context_pack: dict[str, object], target_path: Path) 
     risks = list(context_pack.get("risks") or [])
     actions = list(context_pack.get("actions") or [])
     hypotheses = list(context_pack.get("hypotheses") or [])
+    canonical_summary = dict(context_pack.get("canonical_summary") or {})
+    run_report = build_run_report(
+        runtime.get("display_run"),
+        runtime.get("selected_run") if runtime.get("display_run") != runtime.get("selected_run") else None,
+        title=f"{project.get('name', 'Project')} Run Summary",
+    )
     lines = [
         f"# {project.get('name', 'Project')} Context Pack",
         "",
@@ -57,6 +65,8 @@ def export_context_markdown(context_pack: dict[str, object], target_path: Path) 
         ]
         or ["- none"]
     )
+    lines.extend(["", "Canonical Summary:"])
+    lines.extend([f"- {line}" for line in canonical_summary.get("summary_lines", []) or run_report.get("summary_lines", [])] or ["- none"])
     lines.extend(["Hot Functions:"])
     lines.extend(
         [
@@ -72,4 +82,5 @@ def export_context_markdown(context_pack: dict[str, object], target_path: Path) 
     lines.extend(["", "## Actions"])
     lines.extend([f"- {item.get('title', '-')} [{item.get('confidence', '-')}] " for item in actions] or ["- none"])
     target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    export_report_markdown(run_report, target_path.with_name(target_path.stem + "_run_report.md"))
     return target_path

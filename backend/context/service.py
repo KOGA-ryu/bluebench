@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from backend.adapters.codex.context_pack import build_codex_context_pack
 from backend.instrumentation.storage import InstrumentationStorage
 from backend.triage.service import generate_triage
 
@@ -63,14 +64,18 @@ def build_context_pack(
     effective_run_view_mode = run_view_mode or _session_string(resolved_session, "run_view_mode") or "current"
     effective_open_files = list(open_files or _session_string_list(resolved_session, "open_files"))
     effective_focus_targets = list(focus_targets or _session_targets(resolved_session))
+    limits = CONTEXT_LIMITS[mode]
 
-    selected_run = (
-        dict(runtime_storage.fetch_run(effective_run_id))
-        if effective_run_id and runtime_storage.fetch_run(effective_run_id)
-        else None
+    codex_context = build_codex_context_pack(
+        resolved_project_root,
+        effective_run_id,
+        effective_run_view_mode,
+        storage=runtime_storage,
+        limit_hot_files=limits["hot_files"],
     )
-    display_run = _resolve_display_run(runtime_storage, effective_run_id, effective_run_view_mode)
-    display_run_id = str(display_run.get("run_id") or "") if display_run else None
+    selected_run = codex_context.get("selected_run")
+    display_run = codex_context.get("display_run")
+    display_run_id = str((display_run or {}).get("run_id") or "") if isinstance(display_run, dict) else None
 
     triage_mode = "full" if mode == "full" else "quick"
     triage = generate_triage(
@@ -80,8 +85,6 @@ def build_context_pack(
         storage=runtime_storage,
         include_prefixes=include_prefixes,
     )
-    limits = CONTEXT_LIMITS[mode]
-
     project = dict(triage.get("project") or {})
     runtime_context = dict(triage.get("runtime_context") or {})
     compute = dict(triage.get("compute") or {})
@@ -93,6 +96,7 @@ def build_context_pack(
     compact_risks = _compact_risks(operational_risks, limits["risks"])
     compact_actions = recommendations[: limits["actions"]]
     compact_hypotheses = hypotheses[: limits["hypotheses"]]
+    codex_summary = dict(codex_context.get("summary") or {})
     compact_project = {
         "name": project.get("name"),
         "root": project.get("root"),
@@ -117,7 +121,17 @@ def build_context_pack(
             "quality_warnings": list(runtime_context.get("quality_warnings") or []),
         },
         "compute": {
-            "hot_files": list(compute.get("hot_files") or [])[: limits["hot_files"]],
+            "hot_files": [
+                {
+                    "file_path": item.get("file_path"),
+                    "normalized_compute_score": item.get("normalized_compute_score"),
+                    "rolling_score": item.get("rolling_score"),
+                    "total_time_ms": item.get("raw_ms"),
+                    "call_count": item.get("call_count"),
+                }
+                for item in list(codex_summary.get("hotspots") or [])[: limits["hot_files"]]
+            ]
+            or list(compute.get("hot_files") or [])[: limits["hot_files"]],
             "hot_functions": list(compute.get("hot_functions") or [])[: limits["hot_functions"]],
             "regressions": list(compute.get("regressions") or [])[: limits["hot_files"]],
         },
@@ -129,13 +143,14 @@ def build_context_pack(
         "risks": compact_risks,
         "actions": compact_actions,
         "hypotheses": compact_hypotheses,
-        "evidence_types": _build_evidence_types(
+        "canonical_summary": codex_summary,
+        "evidence_types": dict(codex_summary.get("evidence_types") or _build_evidence_types(
             context_mode=mode,
             selected_run=selected_run,
             display_run=display_run,
             compact_risks=compact_risks,
             compact_actions=compact_actions,
-        ),
+        )),
     }
 
     if mode == "full":
@@ -159,30 +174,6 @@ def build_context_pack_from_session(
         session_state=session_state,
         include_prefixes=include_prefixes,
     )
-
-
-def _resolve_display_run(
-    storage: InstrumentationStorage,
-    active_run_id: str | None,
-    run_view_mode: str,
-) -> dict[str, object] | None:
-    if not active_run_id:
-        return None
-    selected_run = storage.fetch_run(active_run_id)
-    if selected_run is None:
-        return None
-    if run_view_mode == "current":
-        return dict(selected_run)
-    previous_run_id = storage.fetch_previous_comparable_run_id(
-        active_run_id,
-        str(selected_run["scenario_kind"]),
-        str(selected_run["hardware_profile"]),
-        selected_run["project_root"],
-    )
-    if not previous_run_id:
-        return None
-    previous_run = storage.fetch_run(previous_run_id)
-    return dict(previous_run) if previous_run is not None else None
 
 
 def _compact_risks(operational_risks: dict[str, object], limit: int) -> list[dict[str, object]]:

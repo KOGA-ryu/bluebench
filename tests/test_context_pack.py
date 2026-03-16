@@ -101,6 +101,7 @@ class ContextPackTests(unittest.TestCase):
             md_path = export_context_markdown(context_pack, tmp_path / "bb_context_short.md")
             self.assertTrue(json_path.is_file())
             self.assertTrue(md_path.is_file())
+            self.assertTrue((tmp_path / "bb_context_short_run_report.md").is_file())
             loaded = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(loaded["mode"], "short")
             self.assertIn("sample_app", md_path.read_text(encoding="utf-8"))

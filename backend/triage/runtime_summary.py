@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from backend.derive import build_file_compute_details, build_function_compute_details, build_run_summary
+from backend.evidence.loaders.evidence_loader import load_run_evidence
+from backend.evidence.loaders.run_loader import load_previous_comparable_run
 from backend.instrumentation.storage import InstrumentationStorage
 
 
@@ -19,45 +22,43 @@ def summarize_runtime(
     if run_row is None:
         return _empty_runtime_summary(project_root)
 
-    previous_run_id = storage.fetch_previous_comparable_run_id(
+    previous_run = storage.fetch_previous_comparable_run_id(
         run_id,
         str(run_row["scenario_kind"]),
         str(run_row["hardware_profile"]),
         run_row["project_root"],
     )
-    previous_run = storage.fetch_run(previous_run_id) if previous_run_id else None
+    previous_run_row = storage.fetch_run(previous_run) if previous_run else None
+    current_evidence = load_run_evidence(run_id, project_root=project_root, storage=storage)
+    previous_evidence = load_previous_comparable_run(run_id, project_root=project_root, storage=storage)
+    canonical_summary = build_run_summary(current_evidence, previous_evidence, limit_hot_files=10)
     run_summary = storage.fetch_run_summary(run_id)
-    file_summaries = storage.fetch_file_summaries(run_id, limit=10)
     hottest_files = [
         {
-            "file_path": str(row["file_path"]),
-            "normalized_compute_score": float(row["normalized_compute_score"]),
-            "rolling_score": float(row["rolling_score"]),
-            "total_time_ms": float(row["total_time_ms"]),
-            "exception_count": int(row["exception_count"]),
+            "file_path": str(item.get("file_path") or ""),
+            "normalized_compute_score": float(item.get("normalized_compute_score") or item.get("raw_ms") or 0.0),
+            "rolling_score": float(item.get("rolling_score") or 0.0),
+            "total_time_ms": float(item.get("raw_ms") or 0.0),
+            "exception_count": int(build_file_compute_details(storage, run_id, str(item.get("file_path") or "")).get("exception_count") or 0),
         }
-        for row in file_summaries
+        for item in canonical_summary.get("hotspots", []) or []
+        if str(item.get("file_path") or "")
     ]
     hot_functions = []
-    for row in file_summaries[:3]:
-        hot_functions.extend(
-            {
-                "file_path": str(func_row["file_path"]),
-                "display_name": str(func_row["display_name"]),
-                "normalized_compute_score": float(func_row["normalized_compute_score"]),
-                "total_time_ms": float(func_row["total_time_ms"]),
-                "call_count": int(func_row["call_count"]),
-                "exception_count": int(func_row["exception_count"]),
-            }
-            for func_row in storage.fetch_function_summaries_for_file(run_id, str(row["file_path"]))[:3]
-        )
+    for row in hottest_files[:3]:
+        hot_functions.extend(build_function_compute_details(storage, run_id, str(row["file_path"]))[:3])
     external_pressure = _external_pressure(hottest_files, storage, run_id)
     report = _load_performance_report(project_root)
+    comparison = dict(canonical_summary.get("comparison") or {})
     deltas = []
     failure_count = 0
     if run_summary is not None:
-        deltas = json.loads(str(run_summary["biggest_score_deltas_json"]))
         failure_count = int(run_summary["failure_count"])
+    for item in list(comparison.get("file_deltas") or [])[:10]:
+        file_path = str(item.get("file_path") or "")
+        raw_delta = float(item.get("raw_ms_delta") or 0.0)
+        if file_path:
+            deltas.append({"file_path": file_path, "score_delta": raw_delta})
 
     return {
         "selected_run": {
@@ -72,11 +73,11 @@ def summarize_runtime(
         },
         "previous_comparable_run": (
             {
-                "run_id": str(previous_run["run_id"]),
-                "run_name": str(previous_run["run_name"]),
-                "finished_at": str(previous_run["finished_at"] or ""),
+                "run_id": str(previous_run_row["run_id"]),
+                "run_name": str(previous_run_row["run_name"]),
+                "finished_at": str(previous_run_row["finished_at"] or ""),
             }
-            if previous_run is not None
+            if previous_run_row is not None
             else None
         ),
         "hot_files": hottest_files,
@@ -96,6 +97,7 @@ def summarize_runtime(
             }
             for item in deltas[:10]
         ],
+        "canonical_summary": canonical_summary,
         "quality_warnings": _quality_warnings(run_summary, report, hottest_files),
         "performance_report": report,
     }
@@ -110,6 +112,7 @@ def _empty_runtime_summary(project_root: Path) -> dict[str, object]:
         "external_pressure": [],
         "failures": {"failure_count": 0, "failure_heavy_files": []},
         "regressions": [],
+        "canonical_summary": build_run_summary(None, None),
         "quality_warnings": ["No selected completed run."],
         "performance_report": _load_performance_report(project_root),
     }

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from backend.reports import build_run_report, export_report_markdown
+
 
 def export_triage_json(triage: dict[str, object], target_path: Path) -> Path:
     target_path = Path(target_path)
@@ -22,6 +24,12 @@ def export_triage_markdown(triage: dict[str, object], target_path: Path) -> Path
     operational_risks = dict(triage.get("operational_risks") or {})
     hypotheses = list(triage.get("hypotheses") or [])
     recommended_actions = list(triage.get("recommended_actions") or [])
+    canonical_summary = dict(compute.get("canonical_summary") or {})
+    run_report = build_run_report(
+        runtime_context.get("selected_run"),
+        runtime_context.get("previous_comparable_run"),
+        title=f"{project.get('name', 'Project')} Triage Run Summary",
+    )
 
     lines.append(f"# {project.get('name', 'Project')} Triage")
     lines.append("")
@@ -57,6 +65,8 @@ def export_triage_markdown(triage: dict[str, object], target_path: Path) -> Path
         lines.append(
             f"- {item.get('file_path', '-')}: score {float(item.get('normalized_compute_score', 0.0)):.1f}, total {float(item.get('total_time_ms', 0.0)):.1f} ms"
         )
+    lines.append("Canonical Summary:")
+    lines.extend([f"- {line}" for line in canonical_summary.get("summary_lines", []) or run_report.get("summary_lines", [])] or ["- none"])
     lines.append("")
     lines.append("## Dependency and Environment Risks")
     for item in operational_risks.get("native_dependencies", []) or []:
@@ -76,4 +86,5 @@ def export_triage_markdown(triage: dict[str, object], target_path: Path) -> Path
         lines.append(f"  - Confidence: {item.get('confidence', '-')}")
         lines.append(f"  - Reason: {item.get('reason', '-')}")
     target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    export_report_markdown(run_report, target_path.with_name(target_path.stem + "_run_report.md"))
     return target_path

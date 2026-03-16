@@ -33,6 +33,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from backend.derive.summary_builder import build_run_summary
+from backend.evidence.loaders.evidence_loader import load_run_evidence
+from backend.evidence.loaders.run_loader import load_previous_comparable_run
 from backend.instrumentation.storage import InstrumentationStorage
 from backend.stress_spec import (
     BUILTIN_HARDWARE_PROFILES,
@@ -400,46 +403,48 @@ class RunOutputStack(QWidget):
         if not self.current_run_id:
             return
         run_summary = self.storage.fetch_run_summary(self.current_run_id)
-        file_summaries = self.storage.fetch_file_summaries(self.current_run_id, limit=10)
-        if run_summary is None:
+        current_evidence = load_run_evidence(
+            self.current_run_id,
+            project_root=self.current_project_root,
+            storage=self.storage,
+        )
+        previous_evidence = load_previous_comparable_run(
+            self.current_run_id,
+            project_root=self.current_project_root,
+            storage=self.storage,
+        )
+        canonical_summary = build_run_summary(current_evidence, previous_evidence, limit_hot_files=10)
+        if run_summary is None and not canonical_summary.get("hotspots"):
             self.summary_block.setPlainText("Summary pending aggregation.")
             return
         summary_data = {
-            "hottest_files": json.loads(str(run_summary["hottest_files_json"])),
-            "biggest_score_deltas": json.loads(str(run_summary["biggest_score_deltas_json"])),
-            "failure_count": int(run_summary["failure_count"]),
-            "file_summaries": [dict(row) for row in file_summaries],
+            "canonical_summary": canonical_summary,
+            "failure_count": int(run_summary["failure_count"]) if run_summary is not None else 0,
         }
         self._apply_summary_data(summary_data)
 
     def _apply_summary_data(self, summary_data: dict[str, object]) -> None:
-        hottest = summary_data.get("hottest_files", [])
-        deltas = summary_data.get("biggest_score_deltas", [])
-        file_summaries = summary_data.get("file_summaries", [])
+        canonical_summary = dict(summary_data.get("canonical_summary") or {})
+        hottest = list(canonical_summary.get("hotspots") or [])
+        comparison = dict(canonical_summary.get("comparison") or {})
+        deltas = list(comparison.get("file_deltas") or [])
         failure_count = int(summary_data.get("failure_count", 0))
         self.regressions_list.clear()
         lines = ["Hottest Files"]
         for row in hottest if isinstance(hottest, list) else []:
-            lines.append(f"- {row.get('file_path', '-')}: {float(row.get('rolling_score', 0.0)):.1f}")
+            lines.append(f"- {row.get('file_path', '-')}: {float(row.get('raw_ms', 0.0)):.1f} ms")
         lines.append("")
         lines.append("Biggest Deltas")
         for row in deltas if isinstance(deltas, list) else []:
-            lines.append(f"- {row.get('file_path', '-')}: {float(row.get('score_delta', 0.0)):+.1f}")
+            lines.append(f"- {row.get('file_path', '-')}: {float(row.get('raw_ms_delta', 0.0)):+.1f} ms")
             item = QTreeWidgetItem(
                 [
                     str(row.get("file_path", "-")),
-                    f"{float(row.get('score_delta', 0.0)):+.1f}",
+                    f"{float(row.get('raw_ms_delta', 0.0)):+.1f} ms",
                 ]
             )
             item.setData(0, Qt.ItemDataRole.UserRole, str(row.get("file_path", "")))
             self.regressions_list.addTopLevelItem(item)
-        if isinstance(file_summaries, list) and file_summaries:
-            lines.append("")
-            lines.append("File Summaries")
-            for row in file_summaries:
-                lines.append(
-                    f"- {row.get('file_path', '-')}: score {float(row.get('normalized_compute_score', 0.0)):.1f}"
-                )
         performance_report = self._load_performance_report()
         if performance_report is not None:
             lines.append("")
@@ -578,7 +583,9 @@ class RunOutputStack(QWidget):
         failure_count = int(summary_data.get("failure_count", 0))
         if failure_count > 0:
             lines.append(f"Failure warning: {failure_count} failures recorded in this run.")
-        deltas = summary_data.get("biggest_score_deltas", [])
+        canonical_summary = dict(summary_data.get("canonical_summary") or {})
+        comparison = dict(canonical_summary.get("comparison") or {})
+        deltas = comparison.get("file_deltas", [])
         if not isinstance(deltas, list) or not deltas:
             lines.append("Comparison note: no previous comparable run or no meaningful deltas.")
         if performance_report is None:
@@ -611,14 +618,18 @@ class RunOutputStack(QWidget):
         return [f"Stage {name}: {float(value):.1f} ms" for name, value in sorted(stage_timings.items())]
 
     def _dominant_external_share(self, summary_data: dict[str, object]) -> float:
-        file_summaries = summary_data.get("file_summaries")
-        if not isinstance(file_summaries, list) or not file_summaries:
+        canonical_summary = dict(summary_data.get("canonical_summary") or {})
+        hotspots = list(canonical_summary.get("hotspots") or [])
+        if not hotspots:
             return 0.0
-        top_summary = file_summaries[0]
-        if not isinstance(top_summary, dict):
+        top_file = str(hotspots[0].get("file_path") or "")
+        if not top_file or not self.current_run_id:
+            return 0.0
+        top_summary = self.storage.fetch_file_summary(self.current_run_id, top_file)
+        if top_summary is None:
             return 0.0
         try:
-            external_summary = json.loads(str(top_summary.get("external_pressure_summary") or "{}"))
+            external_summary = json.loads(str(top_summary["external_pressure_summary"] or "{}"))
         except json.JSONDecodeError:
             return 0.0
         return float(external_summary.get("runtime_share") or 0.0)

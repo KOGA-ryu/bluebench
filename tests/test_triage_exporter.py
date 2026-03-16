@@ -27,6 +27,7 @@ class TriageExporterTests(unittest.TestCase):
             },
             "compute": {
                 "hot_files": [{"file_path": "app/service.py", "normalized_compute_score": 92.0, "total_time_ms": 420.0}],
+                "canonical_summary": {"summary_lines": ["Top hotspot: app/service.py (420.0 ms)"]},
             },
             "operational_risks": {
                 "native_dependencies": ["PySide6"],
@@ -42,8 +43,10 @@ class TriageExporterTests(unittest.TestCase):
 
             self.assertTrue(json_path.is_file())
             self.assertTrue(md_path.is_file())
+            self.assertTrue((tmp_path / "bb_triage_report_run_report.md").is_file())
             self.assertIn("sample_app", md_path.read_text(encoding="utf-8"))
             self.assertIn("Inspect app/service.py", md_path.read_text(encoding="utf-8"))
+            self.assertIn("Top hotspot: app/service.py", md_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -114,6 +114,7 @@ class TriageServiceTests(unittest.TestCase):
         self.assertTrue(triage["compute"]["hot_files"])
         self.assertEqual(triage["compute"]["hot_files"][0]["file_path"], "app/service.py")
         self.assertTrue(triage["compute"]["regressions"])
+        self.assertTrue(triage["compute"]["canonical_summary"]["summary_lines"])
         self.assertTrue(triage["hypotheses"])
         self.assertTrue(triage["recommended_actions"])
         self.assertIn("native_risk_files", triage["operational_risks"])
