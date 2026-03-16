@@ -14,6 +14,7 @@ import time
 
 from .aggregator import BackgroundAggregator
 from .collector import RunMetricsCollector
+from .stage_timing import clear_stage_timings, load_stage_timings
 from .storage import InstrumentationStorage
 
 
@@ -30,10 +31,12 @@ def _parse_cli(argv: list[str]) -> dict[str, object]:
             continue
         key = token[2:].replace("-", "_")
         parsed[key] = next(iterator)
-    required = {"database", "project_root", "script_path", "run_name"}
+    required = {"database", "project_root", "run_name"}
     missing = [key for key in required if key not in parsed]
     if missing:
         raise SystemExit(f"missing required options: {', '.join(missing)}")
+    if "script_path" not in parsed and "module_name" not in parsed:
+        raise SystemExit("missing required options: script_path or module_name")
     parsed.setdefault("scenario_kind", "instrumented_script")
     parsed.setdefault("hardware_profile", platform.platform())
     return parsed
@@ -111,8 +114,13 @@ class _LiveStateWriter:
 def main() -> int:
     options = _parse_cli(sys.argv[1:])
     project_root = Path(str(options["project_root"])).resolve()
-    script_path = Path(str(options["script_path"])).resolve()
+    script_path_value = str(options.get("script_path") or "").strip()
+    module_name = str(options.get("module_name") or "").strip()
+    script_path = Path(script_path_value).resolve() if script_path_value else None
     storage = InstrumentationStorage(str(options["database"]))
+    stage_timings_path = project_root / ".bluebench" / "stage_timings.json"
+    os.environ["BLUEBENCH_STAGE_TIMINGS_PATH"] = str(stage_timings_path)
+    clear_stage_timings()
     aggregator = BackgroundAggregator(storage)
     collector = RunMetricsCollector(
         project_root,
@@ -130,7 +138,7 @@ def main() -> int:
         storage,
         collector,
         run_id=run_id,
-        script_path=script_path.as_posix(),
+        script_path=script_path.as_posix() if script_path is not None else f"<module:{module_name}>",
         parsed_args=[str(item) for item in options["script_args"]],
         started_at=started_at,
         stdout_buffer=stdout_buffer,
@@ -173,11 +181,14 @@ def main() -> int:
     report_path: str | None = None
 
     try:
-        sys.argv = [script_path.as_posix(), *[str(item) for item in options["script_args"]]]
+        sys.argv = [script_path.as_posix() if script_path is not None else module_name, *[str(item) for item in options["script_args"]]]
         os.chdir(project_root)
         sys.path.insert(0, str(project_root))
-        sys.path.insert(0, str(script_path.parent))
-        runpy.run_path(str(script_path), run_name="__main__")
+        if script_path is not None:
+            sys.path.insert(0, str(script_path.parent))
+            runpy.run_path(str(script_path), run_name="__main__")
+        else:
+            runpy.run_module(module_name, run_name="__main__")
     except KeyboardInterrupt:
         final_status = "stopped" if stop_requested["value"] else "failed"
         exit_code = 130 if stop_requested["value"] else 1
@@ -221,9 +232,11 @@ def main() -> int:
                     "live_state_flush_time_ms": live_writer.flush_total_time_ms,
                     "live_state_flush_count": live_writer.flush_count,
                     "report_generated_at": datetime.now().isoformat(),
-                    "script_path": script_path.as_posix(),
+                    "script_path": script_path.as_posix() if script_path is not None else "",
+                    "module_name": module_name,
                     "parsed_args": [str(item) for item in options["script_args"]],
                     "status": final_status,
+                    "stage_timings_ms": load_stage_timings(),
                 }
             )
             report_path = storage.write_performance_report(project_root, performance_report).as_posix()

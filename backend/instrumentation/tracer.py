@@ -52,6 +52,9 @@ class PythonTracer:
         self._instrumentation_root = Path(__file__).resolve().parent
         self._excluded_relative_prefixes = ("backend/instrumentation/",)
         self._callback_guard = threading.local()
+        self._project_root_str = str(self.project_root)
+        self._instrumentation_root_str = str(self._instrumentation_root)
+        self._code_cache: dict[types.CodeType, tuple[str, str | None, str | None]] = {}
 
     def start(self) -> None:
         if self._enabled:
@@ -128,18 +131,10 @@ class PythonTracer:
 
     def _classify_frame(self, frame: types.FrameType, stack: list[_TraceFrame]) -> _TraceFrame | None:
         code = frame.f_code
-        filename = code.co_filename
-        if not filename:
-            return None
-        resolved_path = Path(filename).resolve()
+        kind, relative_path, bucket_name = self._cached_code_classification(code, frame)
         started_at = time.perf_counter()
-        if self._is_excluded_resolved_path(resolved_path):
-            return None
-        relative_path = self._relative_project_path(resolved_path)
-        if relative_path is not None and any(relative_path.startswith(prefix) for prefix in self._excluded_relative_prefixes):
-            return None
 
-        if self._is_project_file(resolved_path):
+        if kind == "project":
             if relative_path is None:
                 return None
             function_name, symbol_key, display_name = self._symbol_identity(frame, relative_path, stack)
@@ -156,16 +151,55 @@ class PythonTracer:
                 recursion_depth=recursion_depth,
             )
 
-        bucket_name = self._external_bucket_name(frame, resolved_path)
-        if bucket_name is None:
+        if kind != "external" or bucket_name is None:
             return None
-        track_external = not any(item.kind == "external" for item in reversed(stack))
+        if not any(item.kind == "project" for item in reversed(stack)):
+            return None
+        if any(item.kind == "external" for item in reversed(stack)):
+            return None
         return _TraceFrame(
             kind="external",
             started_at=started_at,
             bucket_name=bucket_name,
-            track_external=track_external,
+            track_external=True,
         )
+
+    def _cached_code_classification(
+        self,
+        code: types.CodeType,
+        frame: types.FrameType,
+    ) -> tuple[str, str | None, str | None]:
+        cached = self._code_cache.get(code)
+        if cached is not None:
+            return cached
+
+        filename = code.co_filename
+        if not filename:
+            result = ("ignore", None, None)
+            self._code_cache[code] = result
+            return result
+
+        if filename.startswith(self._instrumentation_root_str):
+            result = ("ignore", None, None)
+            self._code_cache[code] = result
+            return result
+
+        if filename.startswith(self._project_root_str):
+            try:
+                relative_path = Path(filename).resolve().relative_to(self.project_root).as_posix()
+            except ValueError:
+                relative_path = None
+            if relative_path is not None and not any(
+                relative_path.startswith(prefix) for prefix in self._excluded_relative_prefixes
+            ) and filename.endswith(".py"):
+                result = ("project", relative_path, None)
+                self._code_cache[code] = result
+                return result
+
+        bucket_name = self._external_bucket_name(frame, Path(filename).resolve())
+        result = ("external", None, bucket_name) if bucket_name else ("ignore", None, None)
+        self._code_cache[code] = result
+        return result
 
     def _is_project_file(self, resolved_path: Path) -> bool:
         if self._is_excluded_resolved_path(resolved_path):

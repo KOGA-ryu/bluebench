@@ -10,53 +10,90 @@ except ModuleNotFoundError:
     from core.graph_engine.graph_manager import GraphManager
 
 
-IGNORED_DIRECTORIES = {".git", "venv", "__pycache__", "node_modules"}
+IGNORED_DIRECTORIES = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+}
 
 
-def analyze_complexity(ast_node: ast.AST) -> int:
+def analyze_function(function_node: ast.AST) -> tuple[int, set[str]]:
     loops = 0
     branches = 0
     calls = 0
+    direct_calls: set[str] = set()
 
-    for node in ast.walk(ast_node):
+    def visit(node: ast.AST) -> None:
+        nonlocal loops, branches, calls
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not function_node:
+            return
         if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
             loops += 1
         elif isinstance(node, ast.If):
             branches += 1
         elif isinstance(node, ast.Call):
             calls += 1
+            if isinstance(node.func, ast.Name):
+                direct_calls.add(node.func.id)
+        for child in ast.iter_child_nodes(node):
+            visit(child)
 
-    return (loops * 3) + (branches * 2) + calls
+    visit(function_node)
+    return (loops * 3) + (branches * 2) + calls, direct_calls
 
 
 class PythonRepoScanner:
-    def __init__(self, graph_manager: GraphManager, repo_path: str | Path) -> None:
+    def __init__(
+        self,
+        graph_manager: GraphManager,
+        repo_path: str | Path,
+        include_prefixes: list[str] | None = None,
+    ) -> None:
         self.graph_manager = graph_manager
         self.repo_path = Path(repo_path).resolve()
+        self.include_prefixes = sorted(Path(prefix).as_posix().strip("/") for prefix in (include_prefixes or []) if str(prefix).strip())
         self.repository_node_id = self.repo_path.name
         self.parsed_trees: dict[str, ast.AST] = {}
+        self.source_texts: dict[str, str] = {}
         self.module_map: dict[str, str] = {}
         self.package_map: dict[str, str] = {}
         self.function_name_index: dict[str, list[str]] = {}
+        self.pending_call_edges: dict[str, set[str]] = {}
+        self._static_file_records: dict[str, dict[str, object]] = {}
 
     def scan(self) -> None:
         self.graph_manager.clear()
         self.parsed_trees.clear()
+        self.source_texts.clear()
         self.module_map.clear()
         self.package_map.clear()
         self.function_name_index.clear()
+        self.pending_call_edges.clear()
+        self._static_file_records.clear()
         self._ensure_repository_node()
 
         python_files = self._collect_python_files()
         for file_path in python_files:
             self._register_module_node(file_path)
+            self._capture_static_file_record(file_path)
 
         for file_path in python_files:
-            self._scan_module_structure(file_path)
+            self._scan_file(file_path)
 
-        for file_path in python_files:
-            self._scan_imports(file_path)
-            self._scan_function_calls(file_path)
+        self._resolve_pending_call_edges()
+
+    def static_file_records(self) -> list[dict[str, object]]:
+        return [dict(self._static_file_records[key]) for key in sorted(self._static_file_records)]
 
     def _ensure_repository_node(self) -> None:
         if not self.graph_manager.has_node(self.repository_node_id):
@@ -72,8 +109,17 @@ class PythonRepoScanner:
             dirs[:] = [directory for directory in dirs if directory not in IGNORED_DIRECTORIES]
             for filename in files:
                 if filename.endswith(".py"):
-                    python_files.append(Path(root) / filename)
+                    file_path = Path(root) / filename
+                    relative_path = file_path.relative_to(self.repo_path).as_posix()
+                    if self._include_relative_path(relative_path):
+                        python_files.append(file_path)
         return sorted(python_files)
+
+    def _include_relative_path(self, relative_path: str) -> bool:
+        if not self.include_prefixes:
+            return True
+        normalized = Path(relative_path).as_posix()
+        return any(normalized == prefix or normalized.startswith(f"{prefix}/") for prefix in self.include_prefixes)
 
     def _register_module_node(self, file_path: Path) -> None:
         tree = self._parse_file(file_path)
@@ -101,7 +147,7 @@ class PythonRepoScanner:
         if package_name:
             self.package_map[package_name] = relative_path
 
-    def _scan_imports(self, file_path: Path) -> None:
+    def _scan_file(self, file_path: Path) -> None:
         relative_path = file_path.relative_to(self.repo_path).as_posix()
         if not self.graph_manager.has_node(relative_path):
             return
@@ -122,42 +168,34 @@ class PythonRepoScanner:
                 for target in imported_modules:
                     self.graph_manager.add_edge(relative_path, target, "imports")
 
-    def _scan_module_structure(self, file_path: Path) -> None:
-        module_id = file_path.relative_to(self.repo_path).as_posix()
-        if not self.graph_manager.has_node(module_id):
-            return
-
-        tree = self._parse_file(file_path)
-        if tree is None:
-            return
-
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
-                class_id = f"{module_id}::{node.name}"
+                class_id = f"{relative_path}::{node.name}"
                 self.graph_manager.add_node(
                     class_id,
                     node.name,
                     "class",
-                    parent=module_id,
-                    file_path=module_id,
+                    parent=relative_path,
+                    file_path=relative_path,
                     line_number=node.lineno,
                 )
-                self.graph_manager.add_edge(module_id, class_id, "contains")
+                self.graph_manager.add_edge(relative_path, class_id, "contains")
 
             if isinstance(node, ast.FunctionDef):
-                function_id = f"{module_id}::{node.name}"
+                function_id = f"{relative_path}::{node.name}"
+                complexity_score, direct_calls = analyze_function(node)
                 self.graph_manager.add_node(
                     function_id,
                     node.name,
                     "function",
-                    parent=module_id,
-                    file_path=module_id,
+                    parent=relative_path,
+                    file_path=relative_path,
                     line_number=node.lineno,
                 )
                 self.graph_manager.set_metadata(
                     function_id,
                     "compute_score",
-                    analyze_complexity(node),
+                    complexity_score,
                 )
                 self.graph_manager.set_metadata(
                     function_id,
@@ -169,26 +207,9 @@ class PythonRepoScanner:
                     "line_end",
                     getattr(node, "end_lineno", node.lineno),
                 )
-                self.graph_manager.add_edge(module_id, function_id, "contains")
+                self.graph_manager.add_edge(relative_path, function_id, "contains")
                 self.function_name_index.setdefault(node.name, []).append(function_id)
-
-    def _scan_function_calls(self, file_path: Path) -> None:
-        module_id = file_path.relative_to(self.repo_path).as_posix()
-        if not self.graph_manager.has_node(module_id):
-            return
-
-        tree = self._parse_file(file_path)
-        if tree is None:
-            return
-
-        for node in tree.body:
-            if not isinstance(node, ast.FunctionDef):
-                continue
-
-            source_function_id = f"{module_id}::{node.name}"
-            for called_name in self._collect_direct_calls(node):
-                for target_function_id in self.function_name_index.get(called_name, []):
-                    self.graph_manager.add_edge(source_function_id, target_function_id, "calls")
+                self.pending_call_edges[function_id] = direct_calls
 
     def _parse_file(self, file_path: Path) -> ast.AST | None:
         cache_key = file_path.relative_to(self.repo_path).as_posix()
@@ -196,12 +217,73 @@ class PythonRepoScanner:
             return self.parsed_trees[cache_key]
 
         try:
-            tree = ast.parse(file_path.read_text(encoding="utf-8"))
+            source = file_path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
         except (OSError, SyntaxError, UnicodeDecodeError):
             return None
 
+        self.source_texts[cache_key] = source
         self.parsed_trees[cache_key] = tree
         return tree
+
+    def _capture_static_file_record(self, file_path: Path) -> None:
+        relative_path = file_path.relative_to(self.repo_path).as_posix()
+        tree = self._parse_file(file_path)
+        if tree is None:
+            return
+        source = self.source_texts.get(relative_path, "")
+        imports: list[str] = []
+        callable_count = 0
+        class_count = 0
+        framework_markers: set[str] = set()
+        optional_imports: set[str] = set()
+        native_imports: set[str] = set()
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append(alias.name)
+                    top_level = alias.name.split(".", 1)[0]
+                    if top_level in {"AVFoundation", "AppKit", "Cocoa", "CoreAudio", "CoreFoundation", "CoreGraphics", "Foundation", "PySide6", "PyQt5", "PyQt6", "cv2", "numpy", "pandas", "torch"}:
+                        native_imports.add(top_level)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imports.append(node.module)
+                    top_level = node.module.split(".", 1)[0]
+                    if top_level in {"AVFoundation", "AppKit", "Cocoa", "CoreAudio", "CoreFoundation", "CoreGraphics", "Foundation", "PySide6", "PyQt5", "PyQt6", "cv2", "numpy", "pandas", "torch"}:
+                        native_imports.add(top_level)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                callable_count += 1
+            elif isinstance(node, ast.ClassDef):
+                class_count += 1
+            elif isinstance(node, ast.Try):
+                for guarded in node.body:
+                    if isinstance(guarded, ast.Import):
+                        for alias in guarded.names:
+                            optional_imports.add(alias.name.split(".", 1)[0])
+                    elif isinstance(guarded, ast.ImportFrom) and guarded.module:
+                        optional_imports.add(guarded.module.split(".", 1)[0])
+
+        lowered = source.lower()
+        if "qapplication(" in lowered or "pyside6" in lowered or "pyqt" in lowered:
+            framework_markers.add("qt")
+        if "fastapi(" in lowered or "from fastapi" in lowered:
+            framework_markers.add("fastapi")
+        if "flask(" in lowered or "from flask" in lowered:
+            framework_markers.add("flask")
+        if "argparse" in lowered or "click.command" in lowered or "typer.typer" in lowered:
+            framework_markers.add("cli")
+
+        self._static_file_records[relative_path] = {
+            "path": relative_path,
+            "imports": sorted(set(imports)),
+            "has_main_guard": "__name__ == \"__main__\"" in source or "__name__ == '__main__'" in source,
+            "callable_count": callable_count,
+            "class_count": class_count,
+            "framework_markers": sorted(framework_markers),
+            "optional_imports": sorted(optional_imports),
+            "native_imports": sorted(native_imports),
+        }
 
     def _module_has_code(self, tree: ast.AST) -> bool:
         for node in getattr(tree, "body", []):
@@ -209,25 +291,11 @@ class PythonRepoScanner:
                 return True
         return False
 
-    def _collect_direct_calls(self, function_node: ast.FunctionDef) -> set[str]:
-        called_names: set[str] = set()
-        for statement in function_node.body:
-            called_names.update(self._collect_calls_from_node(statement))
-
-        return called_names
-
-    def _collect_calls_from_node(self, node: ast.AST) -> set[str]:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            return set()
-
-        called_names: set[str] = set()
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            called_names.add(node.func.id)
-
-        for child in ast.iter_child_nodes(node):
-            called_names.update(self._collect_calls_from_node(child))
-
-        return called_names
+    def _resolve_pending_call_edges(self) -> None:
+        for source_function_id, called_names in self.pending_call_edges.items():
+            for called_name in called_names:
+                for target_function_id in self.function_name_index.get(called_name, []):
+                    self.graph_manager.add_edge(source_function_id, target_function_id, "calls")
 
     def _resolve_import_target(self, module_name: str) -> str | None:
         candidate = module_name

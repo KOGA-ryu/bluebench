@@ -274,6 +274,13 @@ class RunMetricsCollector:
         if self._run_started_perf is not None:
             finished_perf = self._run_finished_perf if self._run_finished_perf is not None else time.perf_counter()
             runtime_ms = max((finished_perf - self._run_started_perf) * 1000.0, 0.0)
+        quality, reasons = _run_quality(
+            function_count=function_count,
+            files_seen=files_seen,
+            sample_count=sample_count,
+            runtime_ms=runtime_ms,
+            trace_overhead_ms=tracer_callback_time_ms,
+        )
         return {
             "run_id": self.run_id,
             "run_name": self.run_name,
@@ -287,4 +294,41 @@ class RunMetricsCollector:
             "sqlite_write_time_ms": self._sqlite_write_time_ms,
             "trace_overhead_estimate_ms": tracer_callback_time_ms,
             "top_files_by_raw_ms": self.live_hot_files(limit=10),
+            "run_quality": quality,
+            "run_quality_reasons": reasons,
         }
+
+
+def _run_quality(
+    *,
+    function_count: int,
+    files_seen: int,
+    sample_count: int,
+    runtime_ms: float,
+    trace_overhead_ms: float,
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    if files_seen <= 1:
+        reasons.append("very low file coverage")
+    elif files_seen <= 3:
+        reasons.append("low file coverage")
+    if function_count <= 2:
+        reasons.append("very low function coverage")
+    elif function_count <= 5:
+        reasons.append("low function coverage")
+    if sample_count <= 1:
+        reasons.append("insufficient resource samples")
+    elif sample_count <= 3:
+        reasons.append("few resource samples")
+    if runtime_ms < 1000.0:
+        reasons.append("short runtime")
+    if runtime_ms > 0.0 and trace_overhead_ms / runtime_ms >= 0.75:
+        reasons.append("trace overhead dominates runtime")
+    elif runtime_ms > 0.0 and trace_overhead_ms / runtime_ms >= 0.5:
+        reasons.append("trace overhead is high")
+
+    if "trace overhead dominates runtime" in reasons or "very low file coverage" in reasons:
+        return "diagnostic_only", reasons
+    if reasons:
+        return "weak", reasons
+    return "strong", []

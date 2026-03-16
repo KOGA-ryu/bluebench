@@ -46,6 +46,7 @@ def build_context_pack(
     session_state: dict[str, object] | None = None,
     focus_targets: list[dict[str, object]] | None = None,
     open_files: list[str] | None = None,
+    include_prefixes: list[str] | None = None,
 ) -> dict[str, object]:
     if mode not in CONTEXT_LIMITS:
         raise ValueError("mode must be 'tiny', 'short', or 'full'")
@@ -77,6 +78,7 @@ def build_context_pack(
         run_id=display_run_id,
         mode=triage_mode,
         storage=runtime_storage,
+        include_prefixes=include_prefixes,
     )
     limits = CONTEXT_LIMITS[mode]
 
@@ -145,6 +147,7 @@ def build_context_pack_from_session(
     project_root: Path,
     mode: str = "short",
     storage: InstrumentationStorage | None = None,
+    include_prefixes: list[str] | None = None,
 ) -> dict[str, object]:
     session_state = load_session_state(project_root)
     return build_context_pack(
@@ -154,6 +157,7 @@ def build_context_pack_from_session(
         mode=mode,
         storage=storage,
         session_state=session_state,
+        include_prefixes=include_prefixes,
     )
 
 

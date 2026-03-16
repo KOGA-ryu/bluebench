@@ -17,6 +17,7 @@ def generate_triage(
     run_id: str | None = None,
     mode: str = "quick",
     storage: InstrumentationStorage | None = None,
+    include_prefixes: list[str] | None = None,
 ) -> dict[str, object]:
     resolved_project_root = Path(project_root).expanduser().resolve()
     if not resolved_project_root.is_dir():
@@ -26,8 +27,12 @@ def generate_triage(
 
     graph_manager = GraphManager()
     project_loader = ProjectLoader(graph_manager, PythonRepoScanner)
-    file_paths = project_loader.load_project(resolved_project_root)
-    static_summary = summarize_static_project(resolved_project_root, file_paths)
+    file_paths = project_loader.load_project(resolved_project_root, include_prefixes=include_prefixes)
+    static_summary = summarize_static_project(
+        resolved_project_root,
+        file_paths,
+        precomputed_file_records=project_loader.last_static_file_records,
+    )
 
     runtime_storage = storage or InstrumentationStorage(
         resolved_project_root / ".bluebench" / "instrumentation.sqlite3"

@@ -23,19 +23,72 @@ BUILTIN_HARDWARE_PROFILES: dict[str, dict[str, object]] = {
 SCENARIO_DEFAULTS: dict[str, dict[str, object]] = {
     "api_stress": {
         "script_path": "tests/fixtures/instrumentation/cheap_vs_expensive.py",
+        "module_name": "",
         "args": ["--cheap-loops", "25000", "--expensive-size", "180", "--expensive-runs", "3"],
     },
     "file_processing": {
         "script_path": "tests/fixtures/instrumentation/external_bucket_workload.py",
+        "module_name": "",
         "args": ["--items", "900", "--passes", "5"],
     },
     "compute_heavy": {
         "script_path": "tests/fixtures/instrumentation/recursive_workload.py",
+        "module_name": "",
         "args": ["--depth", "10", "--repeats", "4"],
     },
     "custom_script": {
         "script_path": "",
+        "module_name": "",
         "args": [],
+    },
+}
+
+VERIFICATION_PROFILES: dict[str, dict[str, object]] = {
+    "smoke": {
+        "run": {"name": "bluebench_smoke_verify", "project_root": "", "interpreter_path": ""},
+        "hardware": {"profile": "mini_pc_n100_16gb", "overrides": {"cpu_limit": 2, "memory_mb": 4096}},
+        "scenario": {"kind": "compute_heavy"},
+        "dashboard": {"priority": ["hot_files", "cpu_memory", "event_log", "timeline"]},
+        "save_export": {"artifact_path": "runs/bluebench_smoke_verify.bbtest"},
+    },
+    "real": {
+        "run": {"name": "bluebench_real_verify", "project_root": "", "interpreter_path": ""},
+        "hardware": {"profile": "mini_pc_n100_16gb", "overrides": {"cpu_limit": 2, "memory_mb": 4096}},
+        "scenario": {
+            "kind": "custom_script",
+            "script_path": "tools/verification/bluebench_real_verify.py",
+            "module_name": "",
+            "args": [],
+        },
+        "dashboard": {"priority": ["hot_files", "cpu_memory", "event_log", "timeline"]},
+        "save_export": {"artifact_path": "runs/bluebench_real_verify.bbtest"},
+    },
+    "diagnostic": {
+        "run": {"name": "bluebench_triage_diagnostic", "project_root": "", "interpreter_path": ""},
+        "hardware": {"profile": "gigagodtier", "overrides": {"cpu_limit": 8, "memory_mb": 16384}},
+        "scenario": {
+            "kind": "custom_script",
+            "script_path": "",
+            "module_name": "backend.triage.cli",
+            "args": ["--project-root", "", "--mode", "full"],
+        },
+        "dashboard": {"priority": ["event_log", "timeline", "hot_files", "cpu_memory"]},
+        "save_export": {"artifact_path": "runs/bluebench_triage_diagnostic.bbtest"},
+    },
+}
+
+VERIFICATION_PROFILE_METADATA: dict[str, dict[str, str]] = {
+    "smoke": {
+        "label": "Smoke · plumbing",
+        "note": "Fast fixture-based trust check. Use this to verify runner, aggregation, and UI wiring.",
+    },
+    "real": {
+        "label": "Real · bounded baseline",
+        "note": "Recommended BlueBench self-check. Runs the bounded verification script against core backend areas.",
+    },
+    "diagnostic": {
+        "label": "Diagnostic · broad triage",
+        "note": "Broader bottleneck discovery path using module execution for triage-heavy investigation.",
     },
 }
 
@@ -211,13 +264,24 @@ def _matches_section_heading(line: str, section_name: str) -> bool:
     return normalized == section_name
 
 
-def default_section_texts() -> dict[str, str]:
+def default_section_texts(profile: str = "smoke") -> dict[str, str]:
+    spec = verification_profile_spec(profile)
     return {
-        "Run": dump_yaml_subset({"name": "verify_run", "project_root": "", "interpreter_path": ""}),
-        "Hardware": dump_yaml_subset(
-            {"profile": "mini_pc_n100_16gb", "overrides": {"cpu_limit": 2, "memory_mb": 4096}}
-        ),
-        "Scenario": dump_yaml_subset({"kind": "compute_heavy"}),
-        "Dashboard": dump_yaml_subset({"priority": ["hot_files", "cpu_memory", "event_log", "timeline"]}),
-        "Save / Export": dump_yaml_subset({"artifact_path": "runs/verify_run.bbtest"}),
+        "Run": dump_yaml_subset(spec["run"]),
+        "Hardware": dump_yaml_subset(spec["hardware"]),
+        "Scenario": dump_yaml_subset(spec["scenario"]),
+        "Dashboard": dump_yaml_subset(spec["dashboard"]),
+        "Save / Export": dump_yaml_subset(spec["save_export"]),
     }
+
+
+def verification_profile_spec(profile: str) -> dict[str, object]:
+    return dict(VERIFICATION_PROFILES.get(profile, VERIFICATION_PROFILES["smoke"]))
+
+
+def verification_profile_note(profile: str) -> str:
+    return str(VERIFICATION_PROFILE_METADATA.get(profile, VERIFICATION_PROFILE_METADATA["smoke"])["note"])
+
+
+def verification_profile_label(profile: str) -> str:
+    return str(VERIFICATION_PROFILE_METADATA.get(profile, VERIFICATION_PROFILE_METADATA["smoke"])["label"])

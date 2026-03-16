@@ -132,6 +132,65 @@ class InstrumentationRunnerTests(unittest.TestCase):
                 "ok-from-project-root",
             )
 
+    def test_script_runner_executes_module_target(self) -> None:
+        bluebench_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir) / "sample_repo"
+            pkg_dir = project_root / "pkg"
+            pkg_dir.mkdir(parents=True)
+            (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+            (pkg_dir / "runner.py").write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        'Path("module_runner_output.txt").write_text("module-ok", encoding="utf-8")',
+                        'print("module-ok")',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            database_path = Path(tmp_dir) / "instrumentation.sqlite3"
+            command = [
+                sys.executable,
+                "-m",
+                "backend.instrumentation.script_runner",
+                "--database",
+                str(database_path),
+                "--project-root",
+                str(project_root),
+                "--module-name",
+                "pkg.runner",
+                "--run-name",
+                "module-runner-test",
+                "--scenario-kind",
+                "instrumented_script",
+                "--hardware-profile",
+                "test",
+                "--",
+            ]
+            environment = dict(os.environ)
+            environment["PYTHONPATH"] = (
+                str(bluebench_root)
+                if not environment.get("PYTHONPATH")
+                else f"{bluebench_root}{os.pathsep}{environment['PYTHONPATH']}"
+            )
+            completed = subprocess.run(
+                command,
+                cwd=bluebench_root,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(
+                (project_root / "module_runner_output.txt").read_text(encoding="utf-8"),
+                "module-ok",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

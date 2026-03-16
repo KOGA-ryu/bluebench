@@ -45,7 +45,11 @@ IGNORED_PATH_PARTS = {
 }
 
 
-def summarize_static_project(project_root: Path, file_paths: list[str]) -> dict[str, object]:
+def summarize_static_project(
+    project_root: Path,
+    file_paths: list[str],
+    precomputed_file_records: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     root = project_root.resolve()
     normalized_files = sorted(
         Path(path).as_posix() for path in file_paths if _is_project_path(Path(path).as_posix())
@@ -53,7 +57,14 @@ def summarize_static_project(project_root: Path, file_paths: list[str]) -> dict[
     python_files = [path for path in normalized_files if path.endswith(".py")]
     languages = _language_summary(normalized_files)
     top_level_areas = _top_level_areas(normalized_files)
-    file_records = [_analyze_file(root, relative_path) for relative_path in python_files]
+    if precomputed_file_records is not None:
+        file_records = [
+            dict(record)
+            for record in precomputed_file_records
+            if _is_project_path(str(record.get("path") or "")) and str(record.get("path") or "").endswith(".py")
+        ]
+    else:
+        file_records = [_analyze_file(root, relative_path) for relative_path in python_files]
     entry_points = _detect_entry_points(file_records)
     app_type = _guess_app_type(file_records)
     dependencies = _dependency_surface(file_records)

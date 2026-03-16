@@ -12,6 +12,7 @@ import os
 from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -33,7 +34,16 @@ from PySide6.QtWidgets import (
 )
 
 from backend.instrumentation.storage import InstrumentationStorage
-from backend.stress_spec import BUILTIN_HARDWARE_PROFILES, SCENARIO_DEFAULTS, default_section_texts, dump_yaml_subset, parse_yaml_subset
+from backend.stress_spec import (
+    BUILTIN_HARDWARE_PROFILES,
+    SCENARIO_DEFAULTS,
+    default_section_texts,
+    dump_yaml_subset,
+    parse_yaml_subset,
+    verification_profile_label,
+    verification_profile_note,
+    verification_profile_spec,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INSTRUMENTATION_DB_PATH = PROJECT_ROOT / ".bluebench" / "instrumentation.sqlite3"
@@ -217,16 +227,21 @@ class RunOutputStack(QWidget):
         hardware = spec.get("hardware", {})
         if not isinstance(scenario, dict) or not isinstance(run_section, dict) or not isinstance(hardware, dict):
             return False
-        script_path = Path(str(scenario.get("script_path") or "")).expanduser()
-        if not script_path.is_absolute():
+        script_path_text = str(scenario.get("script_path") or "").strip()
+        module_name = str(scenario.get("module_name") or "").strip()
+        script_path = Path(script_path_text).expanduser() if script_path_text else Path()
+        if script_path_text and not script_path.is_absolute():
             script_path = (PROJECT_ROOT / script_path).resolve()
         parsed_args = [str(item) for item in scenario.get("args", [])] if isinstance(scenario.get("args"), list) else []
-        if not script_path.is_file():
+        if script_path_text and not script_path.is_file():
             return False
-        run_name = str(run_section.get("name") or f"{script_path.stem}_{datetime.now().strftime('%H%M%S')}")
+        if not script_path_text and not module_name:
+            return False
+        default_target_name = script_path.stem if script_path_text else module_name.rsplit(".", 1)[-1]
+        run_name = str(run_section.get("name") or f"{default_target_name}_{datetime.now().strftime('%H%M%S')}")
         self.current_run_name = run_name
-        self.current_run_id = f"{script_path.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        self.current_script_path = script_path.as_posix()
+        self.current_run_id = f"{default_target_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        self.current_script_path = script_path.as_posix() if script_path_text else f"<module:{module_name}>"
         self.current_args = parsed_args
         self.current_started_at = datetime.now().isoformat()
         self.current_project_root = self._resolve_project_root(spec, script_path)
@@ -261,8 +276,6 @@ class RunOutputStack(QWidget):
             str(INSTRUMENTATION_DB_PATH),
             "--project-root",
             str(self.current_project_root),
-            "--script-path",
-            str(script_path),
             "--run-name",
             run_name,
             "--scenario-kind",
@@ -272,6 +285,10 @@ class RunOutputStack(QWidget):
             "--",
             *parsed_args,
         ]
+        if module_name:
+            process_args[8:8] = ["--module-name", module_name]
+        else:
+            process_args[8:8] = ["--script-path", str(script_path)]
         self.process.start(executable, process_args)
         if not self.process.waitForStarted(3000):
             self.start_button.setEnabled(True)
@@ -427,6 +444,8 @@ class RunOutputStack(QWidget):
         if performance_report is not None:
             lines.append("")
             lines.append("Performance Report")
+            quality = str(performance_report.get("run_quality", "unrated"))
+            lines.append(f"- run quality: {quality}")
             lines.append(f"- trace events: {int(performance_report.get('trace_events', 0))}")
             lines.append(f"- functions seen: {int(performance_report.get('functions_seen', 0))}")
             lines.append(f"- files seen: {int(performance_report.get('files_seen', 0))}")
@@ -434,6 +453,11 @@ class RunOutputStack(QWidget):
             lines.append(f"- trace overhead est: {float(performance_report.get('trace_overhead_estimate_ms', 0.0)):.1f} ms")
             lines.append(f"- sqlite writes: {float(performance_report.get('sqlite_write_time_ms', 0.0)):.1f} ms")
             lines.append(f"- aggregation: {float(performance_report.get('aggregation_time_ms', 0.0)):.1f} ms")
+            stage_timings = performance_report.get("stage_timings_ms")
+            if isinstance(stage_timings, dict) and stage_timings:
+                lines.append("- stage timings:")
+                for stage_name, stage_ms in sorted(stage_timings.items()):
+                    lines.append(f"  - {stage_name}: {float(stage_ms):.1f} ms")
         lines.append("")
         lines.append(f"Failures: {failure_count}")
         self.summary_block.setPlainText("\n".join(lines))
@@ -445,12 +469,12 @@ class RunOutputStack(QWidget):
         if not isinstance(run_section, dict) or not isinstance(scenario, dict):
             return "No spec loaded."
         return "\n".join(
-            [
-                f"Run Name: {run_section.get('name', '-')}",
-                f"Script: {scenario.get('script_path', '-')}",
-                f"Interpreter: {run_section.get('interpreter_path') or sys.executable}",
-                f"Args: {' '.join(str(item) for item in scenario.get('args', [])) if isinstance(scenario.get('args'), list) else '(none)'}",
-                "Started: -",
+                [
+                    f"Run Name: {run_section.get('name', '-')}",
+                    f"Target: {scenario.get('module_name') or scenario.get('script_path', '-')}",
+                    f"Interpreter: {run_section.get('interpreter_path') or sys.executable}",
+                    f"Args: {' '.join(str(item) for item in scenario.get('args', [])) if isinstance(scenario.get('args'), list) else '(none)'}",
+                    "Started: -",
                 "Elapsed: 00:00:00",
                 "Status: idle",
             ]
@@ -501,7 +525,7 @@ class RunOutputStack(QWidget):
             candidate = Path(str(run_section["project_root"])).expanduser()
             if candidate.exists():
                 project_root = candidate.resolve()
-        else:
+        elif script_path:
             project_root = script_path.parent
         return project_root
 
@@ -523,6 +547,7 @@ class RunOutputStack(QWidget):
             return [f"Performance Report: missing at {self._performance_report_path()}"]
         return [
             f"Performance Report: {self._performance_report_path()}",
+            f"Run Quality: {report.get('run_quality', 'unrated')}",
             f"Trace Events: {int(report.get('trace_events', 0))}",
             f"Functions Seen: {int(report.get('functions_seen', 0))}",
             f"Files Seen: {int(report.get('files_seen', 0))}",
@@ -531,6 +556,7 @@ class RunOutputStack(QWidget):
             f"SQLite Write Time: {float(report.get('sqlite_write_time_ms', 0.0)):.1f} ms",
             f"Aggregation Time: {float(report.get('aggregation_time_ms', 0.0)):.1f} ms",
             f"Live Flush Time: {float(report.get('live_state_flush_time_ms', 0.0)):.1f} ms",
+            *self._stage_timing_debug_lines(report),
         ]
 
     def _open_selected_hot_file(self, item: QTreeWidgetItem) -> None:
@@ -561,13 +587,41 @@ class RunOutputStack(QWidget):
         files_seen = int(performance_report.get("files_seen", 0))
         if files_seen <= 3:
             lines.append(f"Coverage warning: only {files_seen} files were measured.")
+        functions_seen = int(performance_report.get("functions_seen", 0))
+        if functions_seen <= 5:
+            lines.append(f"Coverage warning: only {functions_seen} functions were measured.")
         instrumented_runtime_ms = float(performance_report.get("instrumented_runtime_ms", 0.0))
         trace_overhead_ms = float(performance_report.get("trace_overhead_estimate_ms", 0.0))
         if instrumented_runtime_ms > 0.0 and trace_overhead_ms / instrumented_runtime_ms >= 0.5:
             lines.append("Instrumentation warning: tracer overhead is at least 50% of measured runtime.")
+        external_share = self._dominant_external_share(summary_data)
+        if external_share >= 0.7:
+            lines.append(f"Trust warning: external pressure dominates runtime share ({external_share:.0%}).")
+        quality = str(performance_report.get("run_quality", "unrated"))
+        if quality in {"weak", "diagnostic_only"}:
+            lines.append(f"Overall quality: {quality.replace('_', ' ')}.")
         if not lines:
             lines.append("No obvious quality warnings for this run.")
         return lines
+
+    def _stage_timing_debug_lines(self, report: dict[str, object]) -> list[str]:
+        stage_timings = report.get("stage_timings_ms")
+        if not isinstance(stage_timings, dict) or not stage_timings:
+            return ["Stage Timings: none"]
+        return [f"Stage {name}: {float(value):.1f} ms" for name, value in sorted(stage_timings.items())]
+
+    def _dominant_external_share(self, summary_data: dict[str, object]) -> float:
+        file_summaries = summary_data.get("file_summaries")
+        if not isinstance(file_summaries, list) or not file_summaries:
+            return 0.0
+        top_summary = file_summaries[0]
+        if not isinstance(top_summary, dict):
+            return 0.0
+        try:
+            external_summary = json.loads(str(top_summary.get("external_pressure_summary") or "{}"))
+        except json.JSONDecodeError:
+            return 0.0
+        return float(external_summary.get("runtime_share") or 0.0)
 
     def _apply_visual_state(self, status: str, aggregation_status: str) -> None:
         idle = status == "idle"
@@ -642,8 +696,17 @@ class StressEngineWindow(QWidget):
         self.editor_toggle.clicked.connect(self._toggle_editors)
         self.open_button.clicked.connect(self._open_artifact)
         self.save_button.clicked.connect(self._save_artifact)
+        self.profile_preset = QComboBox()
+        self.profile_preset.addItem(verification_profile_label("smoke"), "smoke")
+        self.profile_preset.addItem(verification_profile_label("real"), "real")
+        self.profile_preset.addItem(verification_profile_label("diagnostic"), "diagnostic")
+        self.profile_preset.currentIndexChanged.connect(self._update_profile_note)
+        self.apply_profile_button = QPushButton("Apply Profile")
+        self.apply_profile_button.clicked.connect(self._apply_profile_preset)
         top_bar_layout.addWidget(self.open_button)
         top_bar_layout.addWidget(self.save_button)
+        top_bar_layout.addWidget(self.profile_preset)
+        top_bar_layout.addWidget(self.apply_profile_button)
         top_bar_layout.addStretch()
         top_bar_layout.addWidget(self.editor_toggle)
 
@@ -651,6 +714,11 @@ class StressEngineWindow(QWidget):
         self.run_context_strip.setWordWrap(True)
         self.run_context_strip.setStyleSheet(
             "padding: 8px 10px; border: 1px solid #1a1a22; background-color: #111116; color: #cdbfae;"
+        )
+        self.profile_note = QLabel()
+        self.profile_note.setWordWrap(True)
+        self.profile_note.setStyleSheet(
+            "padding: 8px 10px; border: 1px solid #1a1a22; background-color: #111116; color: #b6ab9c;"
         )
 
         self.section_list = QListWidget()
@@ -727,17 +795,51 @@ class StressEngineWindow(QWidget):
         splitter.setSizes([300, 420])
 
         layout.addWidget(top_bar)
+        layout.addWidget(self.profile_note)
         layout.addWidget(self.run_context_strip)
         layout.addWidget(splitter, 1)
 
-        self._load_default_sections()
+        self._load_default_sections("smoke")
+        self._update_profile_note()
         self._update_section_guidance(self.section_list.currentRow())
         self._validate_spec()
         self._apply_initial_geometry()
 
-    def _load_default_sections(self) -> None:
-        for section_name, text in default_section_texts().items():
+    def _load_default_sections(self, profile: str = "smoke") -> None:
+        for section_name, text in default_section_texts(profile).items():
             self.section_editors[section_name].setPlainText(text)
+
+    def _apply_profile_preset(self) -> None:
+        profile = str(self.profile_preset.currentData() or "smoke")
+        project_root = self._current_project_root()
+        spec = verification_profile_spec(profile)
+        run_section = dict(spec.get("run") or {})
+        scenario = dict(spec.get("scenario") or {})
+        if project_root:
+            run_section["project_root"] = str(project_root)
+            if not str(run_section.get("interpreter_path") or "").strip():
+                candidate = project_root / ".venv" / "bin" / "python"
+                run_section["interpreter_path"] = str(candidate) if candidate.is_file() else ""
+            args = scenario.get("args")
+            if isinstance(args, list):
+                scenario["args"] = [str(project_root) if item == "" else item for item in args]
+        merged = {
+            "run": run_section,
+            "hardware": spec.get("hardware") or {},
+            "scenario": scenario,
+            "dashboard": spec.get("dashboard") or {},
+            "save_export": spec.get("save_export") or {},
+        }
+        self._load_spec_into_editors(merged)
+        self._validate_spec()
+
+    def _update_profile_note(self) -> None:
+        profile = str(self.profile_preset.currentData() or "smoke")
+        self.profile_note.setText(f"Verification Profile: {verification_profile_note(profile)}")
+
+    def _current_project_root(self) -> Path | None:
+        candidate = self.project_root_provider()
+        return candidate.resolve() if isinstance(candidate, Path) else None
 
     def _toggle_editors(self) -> None:
         visible = self.editor_toggle.isChecked()
@@ -815,8 +917,9 @@ class StressEngineWindow(QWidget):
                 errors.append("Scenario: kind must be api_stress, file_processing, compute_heavy, or custom_script.")
             if kind == "custom_script":
                 script_path = str(scenario.get("script_path") or "")
-                if not script_path:
-                    errors.append("Scenario: custom_script requires script_path.")
+                module_name = str(scenario.get("module_name") or "").strip()
+                if not script_path and not module_name:
+                    errors.append("Scenario: custom_script requires script_path or module_name.")
         if not isinstance(dashboard, dict) or not isinstance(dashboard.get("priority"), list) or not dashboard.get("priority"):
             errors.append("Dashboard: priority must be a non-empty list.")
         return errors
@@ -836,6 +939,7 @@ class StressEngineWindow(QWidget):
         scenario_kind = str(scenario.get("kind") or "compute_heavy")
         defaults = SCENARIO_DEFAULTS.get(scenario_kind, {})
         script_path = str(scenario.get("script_path") or defaults.get("script_path") or "")
+        module_name = str(scenario.get("module_name") or defaults.get("module_name") or "")
         args_value = scenario.get("args")
         if isinstance(args_value, str):
             scenario_args = shlex.split(args_value)
@@ -853,6 +957,7 @@ class StressEngineWindow(QWidget):
             "scenario": {
                 "kind": scenario_kind,
                 "script_path": script_path,
+                "module_name": module_name,
                 "args": scenario_args,
             },
             "dashboard": {

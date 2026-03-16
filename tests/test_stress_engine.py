@@ -86,6 +86,20 @@ args:
         self.assertEqual(scenario_section["kind"], "custom_script")
         self.assertEqual(scenario_section["args"][3], "full")
 
+    def test_parser_preserves_module_name_field(self) -> None:
+        parsed = parse_yaml_subset(
+            """Scenario
+```yaml
+kind: "custom_script"
+module_name: "backend.triage.cli"
+args:
+  - "--project-root"
+  - "/Users/kogaryu/dev/bluebench"
+```""",
+            section_name="Scenario",
+        )
+        self.assertEqual(parsed["module_name"], "backend.triage.cli")
+
     def test_run_output_stack_uses_nested_run_project_root(self) -> None:
         if RunOutputStack is None:
             self.skipTest("PySide6 not available in test environment")

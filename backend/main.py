@@ -2037,6 +2037,7 @@ class BlueBenchWindow(QMainWindow):
             PythonRepoScanner,
         )
         self.current_project_path: Path | None = None
+        self.current_project_file_count = 0
         self.active_run_id: str | None = None
         self.node_windows: dict[str, NodeInspectorWindow] = {}
         self._inspector_open_count = 0
@@ -2154,6 +2155,7 @@ class BlueBenchWindow(QMainWindow):
         self._close_all_node_windows()
         file_paths = self.project_loader.load_project(project_path)
         self.current_project_path = project_path
+        self.current_project_file_count = len(file_paths)
         self._populate_module_tree(file_paths)
         self._refresh_run_selector()
         self._persist_context_session_state()
@@ -2676,6 +2678,10 @@ class BlueBenchWindow(QMainWindow):
         run_summary = self.storage.fetch_run_summary(display_run_id)
         if run_summary is not None:
             lines.append(f"Failures {int(run_summary['failure_count'])}")
+        measured_files = len(self.storage.fetch_file_summaries(display_run_id, limit=None))
+        measured_functions = self.storage.fetch_function_summary_count(display_run_id)
+        total_files = self.current_project_file_count if self.current_project_file_count > 0 else measured_files
+        lines.append(f"Coverage {measured_files}/{total_files} files · {measured_functions} functions")
         previous_run = self.get_previous_comparable_run(display_run_id)
         if previous_run is not None and previous_run.get("run_name"):
             lines.append(f"Previous {previous_run['run_name']}")

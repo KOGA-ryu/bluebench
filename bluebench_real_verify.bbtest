@@ -37,7 +37,7 @@
     }
   },
   "summary": {
-    "note": "Template verification artifact. Use this to rerun the real BlueBench verification workload from the Stress Engine."
+    "note": "Canonical bounded real verification artifact. Use this as the repeatable BlueBench self-check baseline in Stress Engine."
   },
   "debug": {
     "validation": "Template artifact saved for reuse."
