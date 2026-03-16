@@ -1,11 +1,16 @@
 [project]
 name = "bluebench"
 version = "0.1.0"
-description = "Project skeleton for Blue Bench."
+description = "Evidence-first engineering workbench for runtime investigation and AI-assisted analysis."
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pyside6>=6.10,<7",
 ]
+
+[project.scripts]
+bluebench = "scripts.run_bluebench:main"
+scanner = "scripts.run_scanner:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

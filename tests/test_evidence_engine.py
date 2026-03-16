@@ -106,6 +106,70 @@ class EvidenceEngineTests(unittest.TestCase):
         self.assertEqual(comparison["runtime_delta_ms"], -10.0)
         self.assertEqual(comparison["stage_deltas"]["triage_generate"], -5.0)
 
+    def test_load_run_evidence_prefers_exact_run_report_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir)
+            storage = InstrumentationStorage(project_root / ".bluebench" / "instrumentation.sqlite3")
+            storage.initialize_schema()
+            for run_id, run_name, runtime_ms, trace_overhead_ms in (
+                ("run-a", "baseline", 150.0, 20.0),
+                ("run-b", "current", 100.0, 8.0),
+            ):
+                storage.insert_run(
+                    {
+                        "run_id": run_id,
+                        "run_name": run_name,
+                        "project_root": str(project_root),
+                        "scenario_kind": "custom_script",
+                        "hardware_profile": "mini_pc_n100_16gb",
+                        "started_at": "2026-03-15T10:00:00+00:00",
+                        "finished_at": "2026-03-15T10:01:00+00:00",
+                        "status": "completed",
+                    }
+                )
+                storage.replace_staged_summaries(
+                    run_id,
+                    {"hottest_files": [], "biggest_score_deltas": [], "failure_count": 0},
+                    [],
+                    [
+                        {
+                            "file_path": "app/main.py",
+                            "total_self_time_ms": 10.0,
+                            "total_time_ms": 42.0,
+                            "call_count": 5,
+                            "exception_count": 0,
+                            "external_pressure_summary": {"external_buckets": {}},
+                            "normalized_compute_score": 88.0,
+                            "rolling_score": 76.0,
+                        }
+                    ],
+                )
+                storage.write_performance_report(
+                    project_root,
+                    {
+                        "run_id": run_id,
+                        "run_name": run_name,
+                        "status": "completed",
+                        "instrumented_runtime_ms": runtime_ms,
+                        "trace_overhead_estimate_ms": trace_overhead_ms,
+                        "run_quality": "strong",
+                        "stage_timings_ms": {"triage_generate": runtime_ms / 2.0},
+                        "top_files_by_raw_ms": [
+                            {"file_path": "app/main.py", "raw_ms": 42.0, "call_count": 5, "rolling_score": 76.0}
+                        ],
+                    },
+                )
+
+            baseline = load_run_evidence("run-a", project_root=project_root, storage=storage)
+            current = load_run_evidence("run-b", project_root=project_root, storage=storage)
+
+        assert baseline is not None
+        assert current is not None
+        self.assertEqual(baseline["measured"]["runtime_ms"], 150.0)
+        self.assertEqual(current["measured"]["runtime_ms"], 100.0)
+        comparison = compare_runs(baseline, current)
+        self.assertEqual(comparison["runtime_delta_ms"], -50.0)
+
     def test_summary_builder_produces_compact_output(self) -> None:
         evidence = {
             "run_id": "run-1",

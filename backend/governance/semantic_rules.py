@@ -8,6 +8,7 @@ CANONICAL_PRODUCERS = {
     "confidence": "backend/history/confidence.py",
     "verified": "tests/test_canonical_flow.py",
     "comparison": "backend/derive/run_comparator.py",
+    "cold_start_investigation": "backend/adapters/codex/cold_start_packet.py",
 }
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TextIO
 
 from backend.adapters.codex.action_packet import generate_action_packet
+from backend.adapters.codex.cold_start_packet import build_cold_start_packet
 from backend.context import build_context_pack
 from backend.experiments.runner import run_experiment
 from backend.history import load_experiment_records, log_experiment_result, summarize_experiment_history
@@ -37,6 +38,27 @@ def compare_run_command(project_root: Path, baseline_run_id: str, current_run_id
 
 def action_packet_command(project_root: Path, run_id: str, *, storage=None) -> dict[str, object]:
     return generate_action_packet(run_id, project_root=project_root, storage=storage)
+
+
+def cold_start_command(repo_root: Path) -> dict[str, object]:
+    packet = build_cold_start_packet(repo_root)
+    lines = [
+        "BlueBench Cold Start",
+        "Project Type: " + str(packet["project_type"]),
+        "Likely Entry Points:",
+    ]
+    lines.extend(f"- {path}" for path in packet["entry_points"])
+    lines.append("Primary Subsystems:")
+    lines.extend(f"- {name}" for name in packet["primary_subsystems"])
+    lines.append("First Review Targets:")
+    for target in packet["first_review_targets"]:
+        lines.append(f"- {target['path']}")
+        for reason in target["reason"]:
+            lines.append(f"  reason: {reason}")
+        lines.append(f"  confidence: {target['confidence']}")
+    lines.append("Suggested Next Actions:")
+    lines.extend(f"- {action}" for action in packet["recommended_next_actions"])
+    return {"cold_start_packet": packet, "formatted_summary": "\n".join(lines)}
 
 
 def stress_canonical_command(
@@ -205,6 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
     recommend_parser.add_argument("--baseline", dest="baseline_run_id")
     recommend_parser.add_argument("--project-root", default=str(Path.cwd()))
 
+    cold_start_parser = subparsers.add_parser("cold-start", help="Build a compact first-contact repo investigation packet.")
+    cold_start_parser.add_argument("--repo", dest="repo_root", required=True)
+
     stress_parser = subparsers.add_parser("stress-canonical", help="Repeat the canonical flow to validate endurance stability.")
     stress_parser.add_argument("--iterations", type=int, default=100)
     stress_parser.add_argument("--project-root", default=str(Path.cwd()))
@@ -222,6 +247,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
 
     if args.command == "action-packet":
         payload = action_packet_command(Path(args.project_root), args.run_id)
+        output.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return 0
+    if args.command == "cold-start":
+        payload = cold_start_command(Path(args.repo_root))
         output.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         return 0
     if args.command == "experiment" and args.experiment_command == "run":

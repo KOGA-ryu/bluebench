@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from backend.adapters.codex.action_packet import generate_action_packet
+from backend.adapters.codex.cold_start_packet import build_cold_start_packet
 from backend.context import build_context_pack
 from backend.governance.compression_rules import PACKET_BUDGETS, packet_size_bytes, validate_packet_budget
 from backend.history import log_experiment_result, summarize_experiment_history
@@ -68,6 +69,12 @@ class ContextCompressionTests(unittest.TestCase):
         self.assertLessEqual(packet_size_bytes(packet), PACKET_BUDGETS["recommender_output"]["max_bytes"])
         self.assertEqual(validate_packet_budget("recommender_output", packet), [])
         self.assertTrue(packet["recommended_experiment"])
+
+    def test_cold_start_packet_stays_under_budget(self) -> None:
+        with _cold_start_repo() as repo_root:
+            packet = build_cold_start_packet(repo_root)
+        self.assertLessEqual(packet_size_bytes(packet), PACKET_BUDGETS["cold_start_packet"]["max_bytes"])
+        self.assertEqual(validate_packet_budget("cold_start_packet", packet), [])
 
     def test_missing_required_key_produces_validation_error(self) -> None:
         packet = {
@@ -253,6 +260,25 @@ def _compare_payload() -> dict[str, object]:
             },
         },
     }
+
+
+class _cold_start_repo:
+    def __init__(self) -> None:
+        self.tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+
+    def __enter__(self) -> Path:
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        repo_root = Path(self.tmp_dir.name)
+        for directory in ("engine", "core", "profiles", "tests"):
+            (repo_root / directory).mkdir(parents=True, exist_ok=True)
+        (repo_root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+        (repo_root / "engine" / "scanner_engine.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+        (repo_root / "pyproject.toml").write_text("[project]\nname='sample'\nversion='0.1.0'\n", encoding="utf-8")
+        return repo_root
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        assert self.tmp_dir is not None
+        self.tmp_dir.cleanup()
 
 
 if __name__ == "__main__":

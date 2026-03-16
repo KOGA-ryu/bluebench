@@ -18,6 +18,9 @@ class SemanticProducerTests(unittest.TestCase):
     def test_comparison_comes_from_run_comparator(self) -> None:
         validate_canonical_field("comparison", "backend/derive/run_comparator.py")
 
+    def test_cold_start_packet_comes_from_canonical_builder(self) -> None:
+        validate_canonical_field("cold_start_investigation", "backend/adapters/codex/cold_start_packet.py")
+
     def test_canonical_producers_are_unique(self) -> None:
         producers = list(CANONICAL_PRODUCERS.values())
         self.assertEqual(len(producers), len(set(producers)))

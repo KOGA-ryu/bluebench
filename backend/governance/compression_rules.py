@@ -119,6 +119,29 @@ PACKET_BUDGETS = {
             "full_history_summary",
         ],
     },
+    "cold_start_packet": {
+        "max_bytes": 2400,
+        "max_top_level_keys": 8,
+        "max_entry_points": 5,
+        "max_subsystems": 5,
+        "max_review_targets": 3,
+        "max_recommended_actions": 3,
+        "required_keys": [
+            "schema_version",
+            "packet_type",
+            "project_type",
+            "entry_points",
+            "primary_subsystems",
+            "first_review_targets",
+            "recommended_next_actions",
+            "confidence",
+        ],
+        "forbid_keys": [
+            "full_source_code",
+            "full_repo_tree",
+            "full_report_text",
+        ],
+    },
 }
 
 
@@ -167,9 +190,24 @@ def validate_packet_budget(packet_type: str, packet: dict) -> list[str]:
             violations.append(f"{packet_type}: summary line count exceeds {budget['max_summary_lines']}")
 
     if "max_recommended_actions" in budget:
-        action_count = len(list(packet.get("recommended_actions") or []))
+        action_count = len(list(packet.get("recommended_actions") or packet.get("recommended_next_actions") or []))
         if action_count > int(budget["max_recommended_actions"]):
             violations.append(f"{packet_type}: recommended action count exceeds {budget['max_recommended_actions']}")
+
+    if "max_entry_points" in budget:
+        entry_points = list(packet.get("entry_points") or [])
+        if len(entry_points) > int(budget["max_entry_points"]):
+            violations.append(f"{packet_type}: entry point count exceeds {budget['max_entry_points']}")
+
+    if "max_subsystems" in budget:
+        subsystems = list(packet.get("primary_subsystems") or [])
+        if len(subsystems) > int(budget["max_subsystems"]):
+            violations.append(f"{packet_type}: subsystem count exceeds {budget['max_subsystems']}")
+
+    if "max_review_targets" in budget:
+        review_targets = list(packet.get("first_review_targets") or [])
+        if len(review_targets) > int(budget["max_review_targets"]):
+            violations.append(f"{packet_type}: review target count exceeds {budget['max_review_targets']}")
 
     if "max_reason_items_per_bucket" in budget:
         reason = dict(packet.get("reason") or {})

@@ -37,7 +37,9 @@ class SQLiteEvidenceStore:
         if run_row is None:
             return None
         project_root = Path(str(run_row["project_root"] or "")).resolve() if run_row["project_root"] else None
-        report = self._load_performance_report(project_root) if project_root else None
+        report = self._load_run_performance_report(project_root, str(run_row["run_id"])) if project_root else None
+        if report is None and project_root:
+            report = self._load_performance_report(project_root)
         if report and not self._report_matches_run(report, run_row):
             report = None
         if report and isinstance(report.get("top_files_by_raw_ms"), list):
@@ -96,6 +98,16 @@ class SQLiteEvidenceStore:
         try:
             return int(value)
         except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _load_run_performance_report(project_root: Path, run_id: str) -> dict[str, object] | None:
+        report_path = project_root / ".bluebench" / "run_reports" / f"{run_id}.json"
+        if not report_path.is_file():
+            return None
+        try:
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
             return None
 
     @staticmethod

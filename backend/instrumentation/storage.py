@@ -163,8 +163,14 @@ class InstrumentationStorage:
                 connection.execute("ALTER TABLE runs ADD COLUMN project_root TEXT")
 
     def write_performance_report(self, project_root: str | Path, report: dict[str, object]) -> Path:
-        report_path = Path(project_root).resolve() / "bb_performance_report.json"
+        project_path = Path(project_root).resolve()
+        report_path = project_path / "bb_performance_report.json"
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        run_id = str(report.get("run_id") or "")
+        if run_id:
+            run_report_dir = project_path / ".bluebench" / "run_reports"
+            run_report_dir.mkdir(parents=True, exist_ok=True)
+            (run_report_dir / f"{run_id}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         return report_path
 
     def insert_run(self, run_row: dict[str, object]) -> None:
