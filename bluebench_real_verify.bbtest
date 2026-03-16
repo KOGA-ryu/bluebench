@@ -1,0 +1,45 @@
+{
+  "format": "bbtest-1",
+  "saved_at": "2026-03-16T04:00:00",
+  "spec": {
+    "run": {
+      "name": "bluebench_real_verify",
+      "project_root": "/Users/kogaryu/dev/bluebench",
+      "interpreter_path": "/Users/kogaryu/dev/bluebench/.venv/bin/python"
+    },
+    "hardware": {
+      "profile": "mini_pc_n100_16gb",
+      "profile_data": {
+        "cpu_limit": 4,
+        "memory_mb": 16384,
+        "notes": "small x86 baseline"
+      },
+      "overrides": {
+        "cpu_limit": 2,
+        "memory_mb": 4096
+      }
+    },
+    "scenario": {
+      "kind": "custom_script",
+      "script_path": "/Users/kogaryu/dev/bluebench/tools/verification/bluebench_real_verify.py",
+      "args": []
+    },
+    "dashboard": {
+      "priority": [
+        "hot_files",
+        "cpu_memory",
+        "event_log",
+        "timeline"
+      ]
+    },
+    "save_export": {
+      "artifact_path": "runs/bluebench_real_verify.bbtest"
+    }
+  },
+  "summary": {
+    "note": "Template verification artifact. Use this to rerun the real BlueBench verification workload from the Stress Engine."
+  },
+  "debug": {
+    "validation": "Template artifact saved for reuse."
+  }
+}

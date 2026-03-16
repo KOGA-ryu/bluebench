@@ -9,7 +9,7 @@ def compute_grid_layout(
     *,
     grid_columns: int = 4,
     cell_width: int = 264,
-    cell_height: int = 132,
+    cell_height: int = 222,
     logger: logging.Logger | None = None,
 ) -> dict[str, object]:
     active_logger = logger or logging.getLogger(__name__)

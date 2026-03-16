@@ -1,0 +1,93 @@
+{
+  "format": "bbtest-1",
+  "saved_at": "2026-03-14T09:01:53.368674",
+  "spec": {
+    "run": {
+      "name": "verify_run"
+    },
+    "hardware": {
+      "profile": "mini_pc_n100_16gb",
+      "profile_data": {
+        "cpu_limit": 4,
+        "memory_mb": 16384,
+        "notes": "small x86 baseline"
+      },
+      "overrides": {
+        "cpu_limit": 2,
+        "memory_mb": 4096
+      }
+    },
+    "scenario": {
+      "kind": "compute_heavy",
+      "script_path": "tests/fixtures/instrumentation/recursive_workload.py",
+      "args": [
+        "--depth",
+        "10",
+        "--repeats",
+        "4"
+      ]
+    },
+    "dashboard": {
+      "priority": [
+        "hot_files",
+        "cpu_memory",
+        "event_log",
+        "timeline"
+      ]
+    },
+    "save_export": {
+      "artifact_path": "runs/verify_run.bbtest"
+    }
+  },
+  "summary": {
+    "hottest_files": [
+      {
+        "file_path": "tests/fixtures/instrumentation/recursive_workload.py",
+        "total_self_time_ms": 51.88070601434447,
+        "total_time_ms": 703.2998739887262,
+        "call_count": 45,
+        "exception_count": 0,
+        "external_pressure_summary": {
+          "runtime_share": 1.0,
+          "avg_cpu_percent": 0.0,
+          "avg_rss_mb": 22992.0,
+          "external_buckets": {
+            "external:__main__": {
+              "total_time_ms": 8.052000004681759,
+              "call_count": 7
+            },
+            "external:stdlib": {
+              "total_time_ms": 335.04220997565426,
+              "call_count": 11
+            }
+          }
+        },
+        "rolling_score": 699.8037732287953,
+        "normalized_compute_score": 100.0
+      }
+    ],
+    "biggest_score_deltas": [
+      {
+        "file_path": "tests/fixtures/instrumentation/recursive_workload.py",
+        "score_delta": 0.0
+      }
+    ],
+    "failure_count": 0,
+    "file_summaries": [
+      {
+        "run_id": "cab6392eb91a48578206325e29e3590b",
+        "file_path": "tests/fixtures/instrumentation/recursive_workload.py",
+        "total_self_time_ms": 51.88070601434447,
+        "total_time_ms": 703.2998739887262,
+        "call_count": 45,
+        "exception_count": 0,
+        "external_pressure_summary": "{\"runtime_share\": 1.0, \"avg_cpu_percent\": 0.0, \"avg_rss_mb\": 22992.0, \"external_buckets\": {\"external:__main__\": {\"total_time_ms\": 8.052000004681759, \"call_count\": 7}, \"external:stdlib\": {\"total_time_ms\": 335.04220997565426, \"call_count\": 11}}}",
+        "normalized_compute_score": 100.0,
+        "rolling_score": 699.8037732287953
+      }
+    ]
+  },
+  "debug": {
+    "validation": "No validation errors."
+  }
+}

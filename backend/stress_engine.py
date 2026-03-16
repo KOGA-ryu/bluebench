@@ -37,6 +37,13 @@ from backend.stress_spec import BUILTIN_HARDWARE_PROFILES, SCENARIO_DEFAULTS, de
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INSTRUMENTATION_DB_PATH = PROJECT_ROOT / ".bluebench" / "instrumentation.sqlite3"
+SECTION_GUIDANCE = {
+    "Run": "Run identity and execution context. Set the name, target project root, and interpreter.",
+    "Hardware": "Baseline hardware profile plus lightweight overrides for CPU and memory.",
+    "Scenario": "Choose the workload target. Use custom_script for a real project entry point.",
+    "Dashboard": "Controls live output priority order. Keep this short and operational.",
+    "Save / Export": "Artifact settings for .bbtest output and future reuse.",
+}
 
 
 def platform_string() -> str:
@@ -46,6 +53,8 @@ def platform_string() -> str:
 
 
 class RunOutputStack(QWidget):
+    fileRequested = Signal(object)
+
     def __init__(self, storage: InstrumentationStorage, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.storage = storage
@@ -88,8 +97,11 @@ class RunOutputStack(QWidget):
         self.metadata_block.setStyleSheet("border: 1px solid #1a1a22; padding: 8px;")
 
         self.hot_files_list = QTreeWidget()
-        self.hot_files_list.setHeaderLabels(["File", "Score", "Raw ms", "Calls"])
+        self.hot_files_list.setHeaderLabels(["#", "File", "Score", "Raw ms", "Calls"])
         self.hot_files_list.setRootIsDecorated(False)
+        self.hot_files_list.setAlternatingRowColors(True)
+        self.hot_files_list.itemActivated.connect(self._open_selected_hot_file)
+        self.hot_files_list.itemDoubleClicked.connect(self._open_selected_hot_file)
 
         self.cpu_memory_block = QLabel("CPU: -\nRSS: -")
         self.cpu_memory_block.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -108,6 +120,18 @@ class RunOutputStack(QWidget):
         self.summary_block.setMaximumBlockCount(300)
         self.summary_block.setPlainText("No completed run.")
 
+        self.regressions_list = QTreeWidget()
+        self.regressions_list.setHeaderLabels(["File", "Delta"])
+        self.regressions_list.setRootIsDecorated(False)
+        self.regressions_list.setAlternatingRowColors(True)
+        self.regressions_list.itemActivated.connect(self._open_selected_regression)
+        self.regressions_list.itemDoubleClicked.connect(self._open_selected_regression)
+
+        self.run_quality_block = QLabel("Run quality warnings will appear after summary data is available.")
+        self.run_quality_block.setWordWrap(True)
+        self.run_quality_block.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.run_quality_block.setStyleSheet("border: 1px solid #1a1a22; padding: 8px;")
+
         self.debug_toggle = QToolButton()
         self.debug_toggle.setText("Debug Details")
         self.debug_toggle.setCheckable(True)
@@ -124,23 +148,52 @@ class RunOutputStack(QWidget):
         self.timeline_block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.summary_block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.debug_details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.hot_files_list.setColumnWidth(0, 34)
+        self.hot_files_list.setColumnWidth(1, 220)
+        self.regressions_list.setColumnWidth(0, 280)
+
+        self.metadata_label = QLabel("Run Metadata")
+        self.hot_files_label = QLabel("Hot Files")
+        self.cpu_memory_label = QLabel("CPU / Memory")
+        self.event_log_label = QLabel("Event Log")
+        self.timeline_label = QLabel("Timeline")
+        self.summary_label = QLabel("Summary")
+        self.regressions_label = QLabel("Top Regressions")
+        self.run_quality_label = QLabel("Run Quality")
+
+        for label in [
+            self.metadata_label,
+            self.hot_files_label,
+            self.cpu_memory_label,
+            self.event_log_label,
+            self.timeline_label,
+            self.summary_label,
+            self.regressions_label,
+            self.run_quality_label,
+        ]:
+            label.setStyleSheet("font-size: 12px; font-weight: 700; color: #d8d8df; letter-spacing: 0.04em; text-transform: uppercase;")
 
         layout.addWidget(controls)
-        layout.addWidget(QLabel("Run Metadata"))
+        layout.addWidget(self.metadata_label)
         layout.addWidget(self.metadata_block)
-        layout.addWidget(QLabel("Hot Files"))
+        layout.addWidget(self.hot_files_label)
         layout.addWidget(self.hot_files_list)
-        layout.addWidget(QLabel("CPU / Memory"))
+        layout.addWidget(self.cpu_memory_label)
         layout.addWidget(self.cpu_memory_block)
-        layout.addWidget(QLabel("Event Log"))
+        layout.addWidget(self.event_log_label)
         layout.addWidget(self.event_log)
-        layout.addWidget(QLabel("Timeline"))
+        layout.addWidget(self.timeline_label)
         layout.addWidget(self.timeline_block)
-        layout.addWidget(QLabel("Summary"))
+        layout.addWidget(self.summary_label)
         layout.addWidget(self.summary_block)
+        layout.addWidget(self.regressions_label)
+        layout.addWidget(self.regressions_list)
+        layout.addWidget(self.run_quality_label)
+        layout.addWidget(self.run_quality_block)
         layout.addWidget(self.debug_toggle)
         layout.addWidget(self.debug_details)
         self._pending_spec: dict[str, object] | None = None
+        self._apply_visual_state("idle", "idle")
 
     def set_pending_spec(self, spec: dict[str, object], *, editable: bool = True) -> None:
         self._pending_spec = dict(spec)
@@ -149,6 +202,7 @@ class RunOutputStack(QWidget):
         self.stop_button.setEnabled(running)
         if not running:
             self.metadata_block.setText(self._pending_metadata_text(spec))
+            self._apply_visual_state("idle", "idle")
 
     def _start_from_pending(self) -> None:
         if self._pending_spec is None:
@@ -199,6 +253,7 @@ class RunOutputStack(QWidget):
         self.summary_block.setPlainText("Summary pending aggregation.")
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self._apply_visual_state("running", "running")
         process_args = [
             "-m",
             "backend.instrumentation.script_runner",
@@ -283,17 +338,18 @@ class RunOutputStack(QWidget):
         )
         rows = self.storage.fetch_live_file_rows(self.current_run_id)
         self.hot_files_list.clear()
-        for row in sorted(rows, key=lambda item: (-float(item["rolling_score"]), -float(item["raw_ms"])))[:10]:
-            self.hot_files_list.addTopLevelItem(
-                QTreeWidgetItem(
-                    [
-                        Path(str(row["file_path"])).name,
-                        f"{float(row['rolling_score']):.1f}",
-                        f"{float(row['raw_ms']):.1f}",
-                        f"{int(row['call_count'])}",
-                    ]
-                )
+        for index, row in enumerate(sorted(rows, key=lambda item: (-float(item["rolling_score"]), -float(item["raw_ms"])))[:10], start=1):
+            item = QTreeWidgetItem(
+                [
+                    str(index),
+                    Path(str(row["file_path"])).name,
+                    f"{float(row['rolling_score']):.1f}",
+                    f"{float(row['raw_ms']):.1f}",
+                    f"{int(row['call_count'])}",
+                ]
             )
+            item.setData(0, Qt.ItemDataRole.UserRole, str(row["file_path"]))
+            self.hot_files_list.addTopLevelItem(item)
         self.event_log.setPlainText("\n".join(filter(None, [str(live_state["stdout_tail"]), str(live_state["stderr_tail"])])))
         self.timeline_block.setPlainText(
             "\n".join(
@@ -321,6 +377,7 @@ class RunOutputStack(QWidget):
                 ]
             )
         )
+        self._apply_visual_state(str(live_state["status"]), str(live_state["aggregation_status"]))
 
     def _populate_summary_from_storage(self) -> None:
         if not self.current_run_id:
@@ -343,6 +400,7 @@ class RunOutputStack(QWidget):
         deltas = summary_data.get("biggest_score_deltas", [])
         file_summaries = summary_data.get("file_summaries", [])
         failure_count = int(summary_data.get("failure_count", 0))
+        self.regressions_list.clear()
         lines = ["Hottest Files"]
         for row in hottest if isinstance(hottest, list) else []:
             lines.append(f"- {row.get('file_path', '-')}: {float(row.get('rolling_score', 0.0)):.1f}")
@@ -350,6 +408,14 @@ class RunOutputStack(QWidget):
         lines.append("Biggest Deltas")
         for row in deltas if isinstance(deltas, list) else []:
             lines.append(f"- {row.get('file_path', '-')}: {float(row.get('score_delta', 0.0)):+.1f}")
+            item = QTreeWidgetItem(
+                [
+                    str(row.get("file_path", "-")),
+                    f"{float(row.get('score_delta', 0.0)):+.1f}",
+                ]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, str(row.get("file_path", "")))
+            self.regressions_list.addTopLevelItem(item)
         if isinstance(file_summaries, list) and file_summaries:
             lines.append("")
             lines.append("File Summaries")
@@ -371,6 +437,7 @@ class RunOutputStack(QWidget):
         lines.append("")
         lines.append(f"Failures: {failure_count}")
         self.summary_block.setPlainText("\n".join(lines))
+        self.run_quality_block.setText("\n".join(self._run_quality_lines(summary_data, performance_report)))
 
     def _pending_metadata_text(self, spec: dict[str, object]) -> str:
         run_section = spec.get("run", {})
@@ -405,6 +472,7 @@ class RunOutputStack(QWidget):
         self.start_button.setEnabled(self._pending_spec is not None)
         self.stop_button.setEnabled(False)
         self.refresh_state()
+        self._apply_visual_state("completed", "complete")
 
     def _force_kill_process(self) -> None:
         if self.process.state() != QProcess.ProcessState.NotRunning:
@@ -465,13 +533,92 @@ class RunOutputStack(QWidget):
             f"Live Flush Time: {float(report.get('live_state_flush_time_ms', 0.0)):.1f} ms",
         ]
 
+    def _open_selected_hot_file(self, item: QTreeWidgetItem) -> None:
+        file_path = str(item.data(0, Qt.ItemDataRole.UserRole) or "").strip()
+        if file_path:
+            self.fileRequested.emit({"file_path": file_path, "preferred_tab": "Compute"})
+
+    def _open_selected_regression(self, item: QTreeWidgetItem) -> None:
+        file_path = str(item.data(0, Qt.ItemDataRole.UserRole) or "").strip()
+        if file_path:
+            self.fileRequested.emit({"file_path": file_path, "preferred_tab": "Compute"})
+
+    def _run_quality_lines(
+        self,
+        summary_data: dict[str, object],
+        performance_report: dict[str, object] | None,
+    ) -> list[str]:
+        lines: list[str] = []
+        failure_count = int(summary_data.get("failure_count", 0))
+        if failure_count > 0:
+            lines.append(f"Failure warning: {failure_count} failures recorded in this run.")
+        deltas = summary_data.get("biggest_score_deltas", [])
+        if not isinstance(deltas, list) or not deltas:
+            lines.append("Comparison note: no previous comparable run or no meaningful deltas.")
+        if performance_report is None:
+            lines.append("Instrumentation warning: performance report missing.")
+            return lines or ["No quality warnings."]
+        files_seen = int(performance_report.get("files_seen", 0))
+        if files_seen <= 3:
+            lines.append(f"Coverage warning: only {files_seen} files were measured.")
+        instrumented_runtime_ms = float(performance_report.get("instrumented_runtime_ms", 0.0))
+        trace_overhead_ms = float(performance_report.get("trace_overhead_estimate_ms", 0.0))
+        if instrumented_runtime_ms > 0.0 and trace_overhead_ms / instrumented_runtime_ms >= 0.5:
+            lines.append("Instrumentation warning: tracer overhead is at least 50% of measured runtime.")
+        if not lines:
+            lines.append("No obvious quality warnings for this run.")
+        return lines
+
+    def _apply_visual_state(self, status: str, aggregation_status: str) -> None:
+        idle = status == "idle"
+        running = status == "running"
+        completed = status in {"completed", "stopped"} and aggregation_status == "complete"
+
+        self.metadata_block.setStyleSheet(
+            "border: 1px solid #1a1a22; padding: 8px; background-color: #111116; color: #d8d8df;"
+            if idle
+            else "border: 1px solid #6a8fb3; padding: 8px; background-color: #0f1520; color: #e6edf7;"
+            if running
+            else "border: 1px solid #758b54; padding: 8px; background-color: #10160f; color: #e5edd8;"
+            if completed
+            else "border: 1px solid #5b3a3a; padding: 8px; background-color: #1a1010; color: #f0d8d8;"
+        )
+        self.summary_block.setStyleSheet(
+            "border: 1px solid #1a1a22; background-color: #0e0d12; color: #cdbfae;"
+            if not completed
+            else "border: 1px solid #758b54; background-color: #10160f; color: #e7eddc;"
+        )
+        self.event_log.setStyleSheet(
+            "border: 1px solid #1a1a22; background-color: #0d0c11; color: #c4b7a5;"
+            if not completed
+            else "border: 1px solid #15151b; background-color: #09090c; color: #8f887e;"
+        )
+        self.timeline_block.setStyleSheet(
+            "border: 1px solid #1a1a22; background-color: #0d0c11; color: #c4b7a5;"
+        )
+        self.hot_files_list.setStyleSheet(
+            "QTreeWidget { border: 1px solid #1a1a22; background-color: #0d0c11; color: #d8d8df; alternate-background-color: #121118; }"
+            "QHeaderView::section { background-color: #17141f; color: #d8d8df; border: 0; padding: 4px 6px; font-weight: 700; }"
+        )
+        self.regressions_list.setStyleSheet(
+            "QTreeWidget { border: 1px solid #1a1a22; background-color: #0d0c11; color: #d8d8df; alternate-background-color: #121118; }"
+            "QHeaderView::section { background-color: #17141f; color: #d8d8df; border: 0; padding: 4px 6px; font-weight: 700; }"
+        )
+        self.summary_label.setText("Summary" if not completed else "Summary · Complete")
+        self.run_quality_block.setStyleSheet(
+            "border: 1px solid #1a1a22; padding: 8px; background-color: #111116; color: #cdbfae;"
+            if not completed
+            else "border: 1px solid #6a8fb3; padding: 8px; background-color: #0f1520; color: #e6edf7;"
+        )
+
 
 class StressEngineWindow(QWidget):
     closed = Signal()
 
-    def __init__(self, project_root_provider, parent: QWidget | None = None) -> None:
+    def __init__(self, project_root_provider, open_file_inspector=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.project_root_provider = project_root_provider
+        self.open_file_inspector = open_file_inspector
         self.storage = InstrumentationStorage(INSTRUMENTATION_DB_PATH)
         self.storage.initialize_schema()
         self.setWindowTitle("Stress Engine")
@@ -500,11 +647,22 @@ class StressEngineWindow(QWidget):
         top_bar_layout.addStretch()
         top_bar_layout.addWidget(self.editor_toggle)
 
+        self.run_context_strip = QLabel("Run Context: no spec loaded")
+        self.run_context_strip.setWordWrap(True)
+        self.run_context_strip.setStyleSheet(
+            "padding: 8px 10px; border: 1px solid #1a1a22; background-color: #111116; color: #cdbfae;"
+        )
+
         self.section_list = QListWidget()
         self.section_list.setFixedWidth(180)
         self.section_list.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.editor_stack = QStackedWidget()
         self.editor_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.section_guidance = QLabel()
+        self.section_guidance.setWordWrap(True)
+        self.section_guidance.setStyleSheet(
+            "padding: 8px 10px; border: 1px solid #1a1a22; background-color: #111116; color: #b6ab9c;"
+        )
         self.section_editors: dict[str, QPlainTextEdit] = {}
         for section_name in ["Run", "Hardware", "Scenario", "Dashboard", "Save / Export"]:
             self.section_list.addItem(QListWidgetItem(section_name))
@@ -514,29 +672,40 @@ class StressEngineWindow(QWidget):
             self.section_editors[section_name] = editor
             self.editor_stack.addWidget(editor)
         self.section_list.currentRowChanged.connect(self.editor_stack.setCurrentIndex)
+        self.section_list.currentRowChanged.connect(self._update_section_guidance)
         self.section_list.setCurrentRow(0)
 
         editor_area = QWidget()
-        editor_area_layout = QHBoxLayout(editor_area)
+        editor_area_layout = QVBoxLayout(editor_area)
         editor_area_layout.setContentsMargins(0, 0, 0, 0)
         editor_area_layout.setSpacing(8)
-        editor_area_layout.addWidget(self.section_list)
-        editor_area_layout.addWidget(self.editor_stack, 1)
+        editor_body = QWidget()
+        editor_body_layout = QHBoxLayout(editor_body)
+        editor_body_layout.setContentsMargins(0, 0, 0, 0)
+        editor_body_layout.setSpacing(8)
+        editor_body_layout.addWidget(self.section_list)
+        editor_body_layout.addWidget(self.editor_stack, 1)
+        editor_area_layout.addWidget(self.section_guidance)
+        editor_area_layout.addWidget(editor_body, 1)
 
         self.validation_panel = QPlainTextEdit()
         self.validation_panel.setReadOnly(True)
         self.validation_panel.setMaximumHeight(120)
         self.validation_panel.setPlainText("No validation errors.")
+        self.validation_label = QLabel("Validation")
+        self.validation_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #d8d8df; letter-spacing: 0.04em; text-transform: uppercase;")
 
         self.output_stack = RunOutputStack(self.storage)
         self.output_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        if self.open_file_inspector is not None:
+            self.output_stack.fileRequested.connect(self.open_file_inspector)
 
         self.editor_container = QWidget()
         editor_container_layout = QVBoxLayout(self.editor_container)
         editor_container_layout.setContentsMargins(0, 0, 0, 0)
         editor_container_layout.setSpacing(8)
         editor_container_layout.addWidget(editor_area, 1)
-        editor_container_layout.addWidget(QLabel("Validation"))
+        editor_container_layout.addWidget(self.validation_label)
         editor_container_layout.addWidget(self.validation_panel)
 
         editor_scroll = QScrollArea()
@@ -558,9 +727,11 @@ class StressEngineWindow(QWidget):
         splitter.setSizes([300, 420])
 
         layout.addWidget(top_bar)
+        layout.addWidget(self.run_context_strip)
         layout.addWidget(splitter, 1)
 
         self._load_default_sections()
+        self._update_section_guidance(self.section_list.currentRow())
         self._validate_spec()
         self._apply_initial_geometry()
 
@@ -572,6 +743,13 @@ class StressEngineWindow(QWidget):
         visible = self.editor_toggle.isChecked()
         self.editor_toggle.setText("Hide Editors" if visible else "Show Editors")
         self.editor_container.setVisible(visible)
+
+    def _update_section_guidance(self, row: int) -> None:
+        if row < 0 or row >= self.section_list.count():
+            self.section_guidance.setText("Select a section to edit its part of the run spec.")
+            return
+        section_name = self.section_list.item(row).text().replace(" *", "")
+        self.section_guidance.setText(SECTION_GUIDANCE.get(section_name, "Edit this section of the run spec."))
 
     def _collect_section_data(self) -> tuple[dict[str, object], list[str]]:
         errors: list[str] = []
@@ -586,7 +764,7 @@ class StressEngineWindow(QWidget):
         for section_name, key in section_keys.items():
             editor = self.section_editors[section_name]
             try:
-                merged[key] = parse_yaml_subset(editor.toPlainText())
+                merged[key] = parse_yaml_subset(editor.toPlainText(), section_name=section_name)
                 self._set_section_error_state(section_name, False)
             except Exception as exc:
                 errors.append(f"{section_name}: {exc}")
@@ -595,13 +773,14 @@ class StressEngineWindow(QWidget):
 
     def _validate_spec(self) -> None:
         spec, errors = self._collect_section_data()
+        self._update_run_context_strip(self._merged_canonical_spec(spec) if not errors else spec)
         errors.extend(self._canonical_validation_errors(spec))
         if errors:
-            self.validation_panel.setPlainText("\n".join(errors))
+            self._apply_validation_state(errors)
             self.output_stack.set_pending_spec(spec, editable=False)
             self.output_stack.start_button.setEnabled(False)
             return
-        self.validation_panel.setPlainText("No validation errors.")
+        self._apply_validation_state([])
         self.output_stack.set_pending_spec(self._merged_canonical_spec(spec), editable=not self.read_only_summary_mode)
 
     def _canonical_validation_errors(self, section_data: dict[str, object]) -> list[str]:
@@ -789,6 +968,47 @@ class StressEngineWindow(QWidget):
         for editor in self.section_editors.values():
             editor.setReadOnly(enabled)
         self.save_button.setEnabled(not enabled)
+
+    def _update_run_context_strip(self, spec: dict[str, object]) -> None:
+        run_section = spec.get("run", {})
+        scenario = spec.get("scenario", {})
+        if not isinstance(run_section, dict) or not isinstance(scenario, dict):
+            self.run_context_strip.setText("Run Context: no spec loaded")
+            return
+        run_name = str(run_section.get("name") or "-")
+        project_root = str(run_section.get("project_root") or "-")
+        interpreter_path = str(run_section.get("interpreter_path") or sys.executable)
+        script_path = str(scenario.get("script_path") or "-")
+        self.run_context_strip.setText(
+            "\n".join(
+                [
+                    f"{run_name} · {project_root}",
+                    f"{interpreter_path}",
+                    f"{script_path}",
+                ]
+            )
+        )
+
+    def _apply_validation_state(self, errors: list[str]) -> None:
+        if errors:
+            self.validation_label.setText(f"Validation ({len(errors)} errors)")
+            self.validation_label.setStyleSheet(
+                "font-size: 12px; font-weight: 700; color: #f0c3b8; letter-spacing: 0.04em; text-transform: uppercase;"
+            )
+            self.validation_panel.setStyleSheet(
+                "border: 1px solid #9a4e3f; background-color: #1a1010; color: #f0d8d2;"
+            )
+            self.validation_panel.setPlainText("\n".join(errors))
+            return
+
+        self.validation_label.setText("Validation (ready)")
+        self.validation_label.setStyleSheet(
+            "font-size: 12px; font-weight: 700; color: #d9f0ba; letter-spacing: 0.04em; text-transform: uppercase;"
+        )
+        self.validation_panel.setStyleSheet(
+            "border: 1px solid #758b54; background-color: #10160f; color: #dbe8c7;"
+        )
+        self.validation_panel.setPlainText("No validation errors.")
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self.output_stack.shutdown()

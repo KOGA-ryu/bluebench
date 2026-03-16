@@ -1,0 +1,52 @@
+{
+  "format": "bbtest-1",
+  "saved_at": "2026-03-16T03:22:17.694482",
+  "spec": {
+    "run": {
+      "name": "bluebench_ui_verify",
+      "project_root": "/Users/kogaryu/dev/bluebench",
+      "interpreter_path": "/Users/kogaryu/dev/bluebench/.venv/bin/python"
+    },
+    "hardware": {
+      "profile": "mini_pc_n100_16gb",
+      "profile_data": {
+        "cpu_limit": 4,
+        "memory_mb": 16384,
+        "notes": "small x86 baseline"
+      },
+      "overrides": {
+        "cpu_limit": 2,
+        "memory_mb": 4096
+      }
+    },
+    "scenario": {
+      "kind": "compute_heavy",
+      "script_path": "tests/fixtures/instrumentation/recursive_workload.py",
+      "args": [
+        "--depth",
+        "10",
+        "--repeats",
+        "4"
+      ]
+    },
+    "dashboard": {
+      "priority": [
+        "hot_files",
+        "cpu_memory",
+        "event_log",
+        "timeline"
+      ]
+    },
+    "save_export": {
+      "artifact_path": "runs/bluebench_ui_verify.bbtest"
+    }
+  },
+  "summary": {
+    "hottest_files": [],
+    "biggest_score_deltas": [],
+    "failure_count": 0
+  },
+  "debug": {
+    "validation": "No validation errors."
+  }
+}

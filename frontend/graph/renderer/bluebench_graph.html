@@ -18,7 +18,7 @@
       --shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
       --header-h: 28px;
       --node-w: 236px;
-      --node-h: 120px;
+      --node-h: 210px;
       --pad: 12px;
       --button: #22182f;
       --button-border: rgba(255, 255, 255, 0.09);
@@ -69,6 +69,8 @@
 
     .frozen-pane {
       position: relative;
+      display: flex;
+      flex-direction: column;
       width: calc(var(--node-w) + 24px);
       min-width: calc(var(--node-w) + 24px);
       border-right: 1px solid rgba(255, 255, 255, 0.05);
@@ -80,9 +82,12 @@
 
     .scroll-pane {
       position: relative;
+      display: flex;
+      flex-direction: column;
       flex: 1;
       overflow: auto;
       background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.015) 0, rgba(255, 255, 255, 0.015) 132px, rgba(10, 8, 16, 0) 132px, rgba(10, 8, 16, 0) 264px),
         linear-gradient(90deg, rgba(255, 255, 255, 0.02) 0, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
         transparent;
       background-size: 264px 100%;
@@ -91,6 +96,7 @@
     .frozen-content,
     .scroll-content {
       position: relative;
+      flex: 1 1 auto;
       min-height: 100%;
     }
 
@@ -198,10 +204,15 @@
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      font-size: 10px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+      min-height: 22px;
+    }
+
+    .indicator-cluster {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      flex-wrap: wrap;
     }
 
     .tier-badge {
@@ -214,6 +225,98 @@
       width: 8px;
       height: 8px;
       flex: 0 0 8px;
+    }
+
+    .compute-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 18px;
+      padding: 2px 6px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .compute-chip.is-primary {
+      color: #f3e7d3;
+      border-color: rgba(214, 182, 121, 0.22);
+      background: rgba(214, 182, 121, 0.08);
+      font-weight: 700;
+    }
+
+    .compute-chip.is-delta-pos {
+      color: #d9f0ba;
+      border-color: rgba(133, 179, 84, 0.24);
+      background: rgba(117, 139, 84, 0.12);
+    }
+
+    .compute-chip.is-delta-neg {
+      color: #f0c3b8;
+      border-color: rgba(168, 86, 67, 0.24);
+      background: rgba(154, 78, 63, 0.12);
+    }
+
+    .body-summary {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: start;
+      font-size: 11px;
+      color: #e7dccf;
+      line-height: 1.35;
+    }
+
+    .body-summary-main {
+      min-width: 0;
+    }
+
+    .body-summary-title {
+      color: #f3e7d3;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+
+    .body-summary-subtitle {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+
+    .body-summary-meta {
+      color: #cdbfae;
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .body-summary-external {
+      color: #d9c18b;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-top: 4px;
+    }
+
+    .body-summary-path {
+      color: #9e9588;
+      font-size: 10px;
+      text-align: right;
+      max-width: 84px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      word-break: break-word;
     }
 
     .metadata-panel {

@@ -27,6 +27,65 @@ class StressEngineParsingTests(unittest.TestCase):
             parsed = parse_yaml_subset(text)
             self.assertIsInstance(parsed, dict, msg=section_name)
 
+    def test_parser_accepts_markdown_fenced_section_block(self) -> None:
+        text = """Run
+```yaml
+name: "bluebench_real_verify"
+project_root: "/Users/kogaryu/dev/bluebench"
+interpreter_path: "/Users/kogaryu/dev/bluebench/.venv/bin/python"
+```"""
+        parsed = parse_yaml_subset(text)
+        self.assertEqual(parsed["name"], "bluebench_real_verify")
+        self.assertEqual(parsed["project_root"], "/Users/kogaryu/dev/bluebench")
+
+    def test_parser_accepts_fenced_list_content(self) -> None:
+        text = """```yaml
+kind: "custom_script"
+script_path: "/Users/kogaryu/dev/bluebench/backend/triage/cli.py"
+args:
+  - "--project-root"
+  - "/Users/kogaryu/dev/bluebench"
+  - "--mode"
+  - "full"
+```"""
+        parsed = parse_yaml_subset(text)
+        self.assertEqual(parsed["kind"], "custom_script")
+        self.assertEqual(parsed["args"][0], "--project-root")
+
+    def test_parser_extracts_named_section_from_full_multi_section_response(self) -> None:
+        pasted = """Run
+```yaml
+name: "bluebench_real_verify"
+project_root: "/Users/kogaryu/dev/bluebench"
+interpreter_path: "/Users/kogaryu/dev/bluebench/.venv/bin/python"
+```
+
+Hardware
+```yaml
+profile: "mini_pc_n100_16gb"
+overrides:
+  cpu_limit: 2
+  memory_mb: 4096
+```
+
+Scenario
+```yaml
+kind: "custom_script"
+script_path: "/Users/kogaryu/dev/bluebench/backend/triage/cli.py"
+args:
+  - "--project-root"
+  - "/Users/kogaryu/dev/bluebench"
+  - "--mode"
+  - "full"
+```"""
+        run_section = parse_yaml_subset(pasted, section_name="Run")
+        hardware_section = parse_yaml_subset(pasted, section_name="Hardware")
+        scenario_section = parse_yaml_subset(pasted, section_name="Scenario")
+        self.assertEqual(run_section["name"], "bluebench_real_verify")
+        self.assertEqual(hardware_section["profile"], "mini_pc_n100_16gb")
+        self.assertEqual(scenario_section["kind"], "custom_script")
+        self.assertEqual(scenario_section["args"][3], "full")
+
     def test_run_output_stack_uses_nested_run_project_root(self) -> None:
         if RunOutputStack is None:
             self.skipTest("PySide6 not available in test environment")

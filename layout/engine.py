@@ -8,7 +8,7 @@ from .interval_map import ColumnIntervalMap
 from .layout_cache import LayoutCache, invalidate_layout_cache as clear_layout_cache
 
 NODE_WIDTH = 236
-NODE_HEIGHT = 120
+NODE_HEIGHT = 210
 COLUMN_WIDTH = 264
 BATCH_SIZE = 25
 GRID_FALLBACK_DEPTH = 40

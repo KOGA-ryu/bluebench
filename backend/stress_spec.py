@@ -71,8 +71,12 @@ def dump_yaml_subset(value: object, indent: int = 0) -> str:
     return f"{prefix}{_quote_scalar(value)}"
 
 
-def parse_yaml_subset(text: str) -> dict[str, object]:
-    lines = [raw.rstrip() for raw in text.splitlines() if raw.strip() and not raw.strip().startswith("#")]
+SECTION_NAMES = ("Run", "Hardware", "Scenario", "Dashboard", "Save / Export")
+
+
+def parse_yaml_subset(text: str, section_name: str | None = None) -> dict[str, object]:
+    normalized_text = _normalize_yaml_subset_text(text, section_name=section_name)
+    lines = [raw.rstrip() for raw in normalized_text.splitlines() if raw.strip() and not raw.strip().startswith("#")]
     if not lines:
         return {}
 
@@ -148,6 +152,63 @@ def parse_yaml_subset(text: str) -> dict[str, object]:
     if not isinstance(parsed, dict):
         raise ValueError("top-level value must be a mapping")
     return parsed
+
+
+def _normalize_yaml_subset_text(text: str, section_name: str | None = None) -> str:
+    raw_lines = text.splitlines()
+    filtered_lines: list[str] = []
+    for raw in raw_lines:
+        stripped = raw.strip()
+        if not stripped:
+            filtered_lines.append("")
+            continue
+        if stripped.startswith("```"):
+            continue
+        filtered_lines.append(raw.rstrip())
+
+    if section_name:
+        section_lines = _extract_named_section(filtered_lines, section_name)
+        if section_lines:
+            filtered_lines = section_lines
+
+    nonempty_lines = [line for line in filtered_lines if line.strip()]
+    if len(nonempty_lines) >= 2:
+        first = nonempty_lines[0].strip().rstrip(":")
+        second = nonempty_lines[1].strip()
+        if first in SECTION_NAMES and ":" in second:
+            first_index = filtered_lines.index(nonempty_lines[0])
+            filtered_lines = filtered_lines[first_index + 1 :]
+
+    return "\n".join(filtered_lines)
+
+
+def _extract_named_section(lines: list[str], section_name: str) -> list[str]:
+    matched_start: int | None = None
+    for index, line in enumerate(lines):
+        if _matches_section_heading(line, section_name):
+            matched_start = index
+            break
+    if matched_start is None:
+        return lines
+
+    extracted: list[str] = []
+    for index in range(matched_start + 1, len(lines)):
+        line = lines[index]
+        if _matches_any_section_heading(line) and index > matched_start + 1:
+            break
+        extracted.append(line)
+    return extracted
+
+
+def _matches_any_section_heading(line: str) -> bool:
+    return any(_matches_section_heading(line, section_name) for section_name in SECTION_NAMES)
+
+
+def _matches_section_heading(line: str, section_name: str) -> bool:
+    stripped = line.strip()
+    normalized = stripped.strip("*#").strip()
+    normalized = normalized.rstrip(":").strip()
+    return normalized == section_name
 
 
 def default_section_texts() -> dict[str, str]:

@@ -1,6 +1,6 @@
 (function () {
   const NODE_WIDTH = 236;
-  const NODE_HEIGHT = 120;
+  const NODE_HEIGHT = 210;
   const COLUMN_WIDTH = 264;
   const BASE_COLORS = ["#f0b75e", "#9a4e3f", "#6a8fb3", "#758b54", "#d78b52", "#476c8a"];
   const TIER_COLORS = {9: "#f6b04d", 6: "#8ea8c3", 3: "#7a8d4e"};
@@ -225,16 +225,47 @@
 
     const indicatorRow = document.createElement("div");
     indicatorRow.className = "indicator-row";
+    const leftCluster = document.createElement("div");
+    leftCluster.className = "indicator-cluster";
     const tierBadge = document.createElement("div");
-    tierBadge.className = "tier-badge";
+    tierBadge.className = "compute-chip tier-badge";
     const tierDot = document.createElement("div");
     tierDot.className = "tier-dot";
     const tierLabel = document.createElement("span");
     tierBadge.appendChild(tierDot);
     tierBadge.appendChild(tierLabel);
-    const tally = document.createElement("div");
-    indicatorRow.appendChild(tierBadge);
-    indicatorRow.appendChild(tally);
+    const scoreChip = document.createElement("div");
+    scoreChip.className = "compute-chip is-primary";
+    const deltaChip = document.createElement("div");
+    deltaChip.className = "compute-chip";
+    const typeChip = document.createElement("div");
+    typeChip.className = "compute-chip";
+    leftCluster.appendChild(tierBadge);
+    leftCluster.appendChild(scoreChip);
+    leftCluster.appendChild(deltaChip);
+    indicatorRow.appendChild(leftCluster);
+    indicatorRow.appendChild(typeChip);
+
+    const bodySummary = document.createElement("div");
+    bodySummary.className = "body-summary";
+    const bodySummaryMain = document.createElement("div");
+    bodySummaryMain.className = "body-summary-main";
+    const bodySummaryTitle = document.createElement("div");
+    bodySummaryTitle.className = "body-summary-title";
+    const bodySummarySubtitle = document.createElement("div");
+    bodySummarySubtitle.className = "body-summary-subtitle";
+    const bodySummaryMeta = document.createElement("div");
+    bodySummaryMeta.className = "body-summary-meta";
+    const bodySummaryExternal = document.createElement("div");
+    bodySummaryExternal.className = "body-summary-external";
+    const bodySummaryPath = document.createElement("div");
+    bodySummaryPath.className = "body-summary-path";
+    bodySummaryMain.appendChild(bodySummaryTitle);
+    bodySummaryMain.appendChild(bodySummarySubtitle);
+    bodySummaryMain.appendChild(bodySummaryMeta);
+    bodySummaryMain.appendChild(bodySummaryExternal);
+    bodySummary.appendChild(bodySummaryMain);
+    bodySummary.appendChild(bodySummaryPath);
 
     const metadataPanel = document.createElement("div");
     metadataPanel.className = "metadata-panel";
@@ -260,6 +291,7 @@
     });
 
     body.appendChild(indicatorRow);
+    body.appendChild(bodySummary);
     body.appendChild(metadataPanel);
     body.appendChild(loadMore);
     body.appendChild(metadataToggle);
@@ -274,7 +306,14 @@
       expandButton,
       tierDot,
       tierLabel,
-      tally,
+      scoreChip,
+      deltaChip,
+      typeChip,
+      bodySummaryTitle,
+      bodySummarySubtitle,
+      bodySummaryMeta,
+      bodySummaryExternal,
+      bodySummaryPath,
       metadataPanel,
       loadMore,
       metadataToggle,
@@ -315,9 +354,39 @@
     refs.metadataToggle.textContent = node.metadata_expanded ? "×" : "i";
     refs.tierDot.style.background = tier ? (TIER_COLORS[tier] || TIER_COLORS[3]) : "#3a3a44";
     refs.tierLabel.textContent = tier ? `Tier ${tier}` : "No run";
-    refs.tally.textContent = hasMeasuredCompute
-      ? `Score ${Number(node.display_compute_score || 0).toFixed(1)}`
+    refs.scoreChip.textContent = hasMeasuredCompute
+      ? `S ${Number(node.display_compute_score || 0).toFixed(0)}`
       : "Neutral";
+    const deltaValue = node.display_compute_delta;
+    refs.deltaChip.hidden = !(deltaValue !== null && deltaValue !== undefined);
+    refs.deltaChip.classList.remove("is-delta-pos", "is-delta-neg");
+    if (!refs.deltaChip.hidden) {
+      const numericDelta = Number(deltaValue || 0);
+      refs.deltaChip.textContent = numericDelta >= 0
+        ? `+${numericDelta.toFixed(0)}`
+        : `${numericDelta.toFixed(0)}`;
+      refs.deltaChip.classList.add(numericDelta >= 0 ? "is-delta-pos" : "is-delta-neg");
+    }
+    refs.typeChip.textContent = String(node.type || "node");
+    refs.bodySummaryTitle.textContent = hasMeasuredCompute
+      ? `Score ${Number(node.display_compute_score || 0).toFixed(1)}`
+      : "No Active Run";
+    refs.bodySummarySubtitle.textContent = tier ? `Tier ${tier} · ${String(node.type || "node")}` : String(node.type || "node");
+    refs.bodySummaryMeta.textContent = node.type === "folder"
+      ? `${Number(node.child_count || 0)} items`
+      : (node.relationship_summary && (
+        Number(node.relationship_summary.calls || 0)
+        + Number(node.relationship_summary.imports || 0)
+        + Number(node.relationship_summary.called_by || 0)
+        + Number(node.relationship_summary.imported_by || 0)
+      ) > 0)
+        ? `${Number(node.relationship_summary.calls || 0)} calls · ${Number(node.relationship_summary.imports || 0)} imports`
+        : "Measured file state";
+    refs.bodySummaryExternal.hidden = !node.display_external_summary;
+    refs.bodySummaryExternal.textContent = node.display_external_summary
+      ? `External ${String(node.display_external_summary)}`
+      : "";
+    refs.bodySummaryPath.textContent = String(node.file_path || node.id || "");
     if (!node.metadata_expanded) {
       refs.metadataPanel.scrollTop = 0;
     }

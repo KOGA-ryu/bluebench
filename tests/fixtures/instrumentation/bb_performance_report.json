@@ -1,0 +1,34 @@
+{
+  "run_id": "2cd791f892f848a0afdab274ad6bf2af",
+  "run_name": "verify_run",
+  "scenario_kind": "compute_heavy",
+  "hardware_profile": "mini_pc_n100_16gb",
+  "trace_events": 6846,
+  "functions_seen": 2,
+  "files_seen": 1,
+  "resource_samples": 2,
+  "instrumented_runtime_ms": 278.26895799080376,
+  "sqlite_write_time_ms": 3.0801669927313924,
+  "trace_overhead_estimate_ms": 235.6930232635932,
+  "top_files_by_raw_ms": [
+    {
+      "file_path": "recursive_workload.py",
+      "file_name": "recursive_workload.py",
+      "rolling_score": 797.0893593945294,
+      "raw_ms": 801.7048339388566,
+      "call_count": 45
+    }
+  ],
+  "aggregation_time_ms": 1.5596659941365942,
+  "live_state_flush_time_ms": 14.168875000905246,
+  "live_state_flush_count": 5,
+  "report_generated_at": "2026-03-15T12:41:02.249769",
+  "script_path": "/Users/kogaryu/dev/bluebench/tests/fixtures/instrumentation/recursive_workload.py",
+  "parsed_args": [
+    "--depth",
+    "10",
+    "--repeats",
+    "4"
+  ],
+  "status": "completed"
+}
