@@ -1,0 +1,42 @@
+{
+  "files": [
+    {
+      "call_count": 28141,
+      "file_path": "backend/scanner/python_parser/python_scanner.py",
+      "normalized_compute_score": 100.0,
+      "raw_ms": 274.31,
+      "rolling_score": 91.4
+    },
+    {
+      "call_count": 1550,
+      "file_path": "backend/core/graph_engine/graph_manager.py",
+      "normalized_compute_score": 8.7,
+      "raw_ms": 23.84,
+      "rolling_score": 12.9
+    },
+    {
+      "call_count": 801,
+      "file_path": "backend/triage/static_summary.py",
+      "normalized_compute_score": 8.1,
+      "raw_ms": 22.4,
+      "rolling_score": 11.8
+    }
+  ],
+  "hardware_profile": "mini_pc_n100_16gb",
+  "measured": {
+    "runtime_ms": 1615.02,
+    "trace_overhead_ms": 256.22
+  },
+  "project_root": "/Users/kogaryu/dev/bluebench",
+  "quality": "strong",
+  "run_id": "sample-run-b",
+  "run_name": "sample-run-b",
+  "scenario_kind": "custom_script",
+  "schema_version": "1",
+  "stages": {
+    "context_build": 796.88,
+    "triage_generate": 797.28
+  },
+  "status": "completed",
+  "timestamp": "2026-03-16T12:00:00Z"
+}

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+EVIDENCE_SCHEMA_VERSION = "1"
+
 
 def normalize_run_evidence(payload: dict[str, Any] | None) -> dict[str, Any]:
     data = dict(payload or {})
@@ -9,6 +11,7 @@ def normalize_run_evidence(payload: dict[str, Any] | None) -> dict[str, Any]:
     stages = dict(data.get("stages") or {})
     files = list(data.get("files") or [])
     return {
+        "schema_version": str(data.get("schema_version") or EVIDENCE_SCHEMA_VERSION),
         "run_id": str(data.get("run_id") or ""),
         "run_name": str(data.get("run_name") or ""),
         "timestamp": str(data.get("timestamp") or ""),
@@ -54,9 +57,11 @@ def build_run_evidence(
     trace_overhead_ms: float | None,
     stages: dict[str, float] | None,
     files: list[dict[str, Any]] | None,
+    schema_version: str = EVIDENCE_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     return normalize_run_evidence(
         {
+            "schema_version": schema_version,
             "run_id": run_id,
             "run_name": run_name,
             "timestamp": timestamp,

@@ -73,6 +73,7 @@ class EvidenceEngineTests(unittest.TestCase):
             evidence = load_run_evidence("run-1", project_root=project_root, storage=storage)
 
         assert evidence is not None
+        self.assertEqual(evidence["schema_version"], "1")
         self.assertEqual(evidence["run_id"], "run-1")
         self.assertEqual(evidence["measured"]["runtime_ms"], 123.0)
         self.assertEqual(evidence["stages"]["triage_generate"], 50.0)
@@ -100,6 +101,8 @@ class EvidenceEngineTests(unittest.TestCase):
         comparison = compare_runs(baseline, current)
 
         self.assertEqual(hotspots[0]["file_path"], "b.py")
+        self.assertEqual(comparison["derive_version"], "1")
+        self.assertTrue(comparison["schema_compatible"])
         self.assertEqual(comparison["runtime_delta_ms"], -10.0)
         self.assertEqual(comparison["stage_deltas"]["triage_generate"], -5.0)
 
@@ -119,10 +122,36 @@ class EvidenceEngineTests(unittest.TestCase):
 
         summary = build_run_summary(evidence, previous)
 
+        self.assertEqual(summary["derive_version"], "1")
+        self.assertEqual(summary["schema_version"], "1")
         self.assertEqual(summary["run"]["run_id"], "run-1")
         self.assertEqual(summary["hotspots"][0]["file_path"], "a.py")
         self.assertTrue(summary["summary_lines"])
         self.assertTrue(summary["evidence_types"]["measured"])
+
+    def test_summary_builder_labels_schema_mismatch(self) -> None:
+        current = {
+            "schema_version": "2",
+            "run_id": "run-2",
+            "run_name": "current",
+            "status": "completed",
+            "measured": {"runtime_ms": 50.0},
+            "files": [{"file_path": "a.py", "raw_ms": 10.0, "call_count": 1}],
+        }
+        previous = {
+            "schema_version": "1",
+            "run_id": "run-1",
+            "run_name": "previous",
+            "status": "completed",
+            "measured": {"runtime_ms": 60.0},
+            "files": [{"file_path": "a.py", "raw_ms": 11.0, "call_count": 1}],
+        }
+
+        summary = build_run_summary(current, previous)
+
+        self.assertFalse(summary["comparison"]["schema_compatible"])
+        self.assertTrue(summary["comparison"]["comparison_warnings"])
+        self.assertTrue(any("Comparison warning:" in line for line in summary["summary_lines"]))
 
     def test_codex_context_pack_uses_canonical_derivation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

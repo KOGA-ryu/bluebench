@@ -428,6 +428,7 @@ class RunOutputStack(QWidget):
         hottest = list(canonical_summary.get("hotspots") or [])
         comparison = dict(canonical_summary.get("comparison") or {})
         deltas = list(comparison.get("file_deltas") or [])
+        comparison_warnings = [str(item) for item in comparison.get("comparison_warnings", []) or [] if str(item)]
         failure_count = int(summary_data.get("failure_count", 0))
         self.regressions_list.clear()
         lines = ["Hottest Files"]
@@ -435,6 +436,9 @@ class RunOutputStack(QWidget):
             lines.append(f"- {row.get('file_path', '-')}: {float(row.get('raw_ms', 0.0)):.1f} ms")
         lines.append("")
         lines.append("Biggest Deltas")
+        if comparison_warnings:
+            for warning in comparison_warnings:
+                lines.append(f"- warning: {warning}")
         for row in deltas if isinstance(deltas, list) else []:
             lines.append(f"- {row.get('file_path', '-')}: {float(row.get('raw_ms_delta', 0.0)):+.1f} ms")
             item = QTreeWidgetItem(

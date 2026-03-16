@@ -73,6 +73,15 @@ except ModuleNotFoundError:
     from derive import build_file_compute_details, build_function_compute_details
 
 try:
+    from backend.derive.summary_builder import build_run_summary
+    from backend.evidence.loaders.evidence_loader import load_run_evidence
+    from backend.evidence.loaders.run_loader import load_previous_comparable_run
+except ModuleNotFoundError:
+    from derive.summary_builder import build_run_summary
+    from evidence.loaders.evidence_loader import load_run_evidence
+    from evidence.loaders.run_loader import load_previous_comparable_run
+
+try:
     from backend.stress_engine import StressEngineWindow
 except ModuleNotFoundError:
     from stress_engine import StressEngineWindow
@@ -807,6 +816,7 @@ class NodeInspectorWindow(QMainWindow):
             "previous_run_name": node.get("previous_run_name"),
             "previous_run_id": node.get("previous_run_id"),
             "previous_finished_at": node.get("previous_run_finished_at"),
+            "comparison_warnings": list(node.get("active_run_comparison_warnings") or []),
         }
 
         self._update_outline(node)
@@ -1216,6 +1226,8 @@ class NodeInspectorWindow(QMainWindow):
             if previous_finished_at:
                 previous_line += f" · {previous_finished_at}"
             lines.append(previous_line)
+        for warning in self.current_run_provenance.get("comparison_warnings") or []:
+            lines.append(f"Comparison warning: {warning}")
         return lines
 
     def _diagnostic_callout_lines(self) -> list[str]:
@@ -2376,6 +2388,7 @@ class BlueBenchWindow(QMainWindow):
         active_run_status = ""
         active_run_finished_at = ""
         active_run_failure_count: int | None = None
+        active_run_comparison_warnings: list[str] = []
         previous_run_name = ""
         previous_run_id = ""
         previous_run_finished_at = ""
@@ -2395,6 +2408,7 @@ class BlueBenchWindow(QMainWindow):
                     previous_run_name = str(previous_run.get("run_name") or "")
                     previous_run_id = str(previous_run.get("run_id") or "")
                     previous_run_finished_at = str(previous_run.get("finished_at") or "")
+                active_run_comparison_warnings = self._comparison_warnings_for_run(display_run_id)
         payload = {
             "id": node.get("id"),
             "name": node.get("name"),
@@ -2415,6 +2429,7 @@ class BlueBenchWindow(QMainWindow):
             "active_run_status": active_run_status,
             "active_run_finished_at": active_run_finished_at,
             "active_run_failure_count": active_run_failure_count,
+            "active_run_comparison_warnings": active_run_comparison_warnings,
             "previous_run_name": previous_run_name,
             "previous_run_id": previous_run_id,
             "previous_run_finished_at": previous_run_finished_at,
@@ -2529,6 +2544,15 @@ class BlueBenchWindow(QMainWindow):
     def get_function_compute_for_run(self, run_id: str | None, file_path: str) -> list[dict[str, object]]:
         return build_function_compute_details(self.storage, run_id, file_path)
 
+    def _comparison_warnings_for_run(self, run_id: str | None) -> list[str]:
+        if not run_id or not self.current_project_path:
+            return []
+        current_evidence = load_run_evidence(run_id, project_root=self.current_project_path, storage=self.storage)
+        previous_evidence = load_previous_comparable_run(run_id, project_root=self.current_project_path, storage=self.storage)
+        summary = build_run_summary(current_evidence, previous_evidence, limit_hot_files=10)
+        comparison = dict(summary.get("comparison") or {})
+        return [str(item) for item in comparison.get("comparison_warnings", []) or [] if str(item)]
+
     def _refresh_run_selector(self) -> None:
         selected_run_id = self.active_run_id
         available_run_ids = {str(row["run_id"]) for row in self.list_available_runs()}
@@ -2639,6 +2663,8 @@ class BlueBenchWindow(QMainWindow):
         previous_run = self.get_previous_comparable_run(display_run_id)
         if previous_run is not None and previous_run.get("run_name"):
             lines.append(f"Previous {previous_run['run_name']}")
+        for warning in self._comparison_warnings_for_run(display_run_id):
+            lines.append(f"Comparison warning: {warning}")
         quality_lines = self._run_quality_lines(display_run_id)
         lines.extend(quality_lines)
         self.active_run_badge.setText("\n".join(lines))

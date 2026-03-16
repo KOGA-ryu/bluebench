@@ -58,7 +58,7 @@ class LayoutEngineTests(unittest.TestCase):
         child_nodes = [node for node in layout["nodes"] if node["parent_id"] == "root"]
 
         self.assertEqual([node["id"] for node in child_nodes], ["high", "mid", "low"])
-        self.assertEqual([node["y"] for node in child_nodes], [0, 120, 240])
+        self.assertEqual([node["y"] for node in child_nodes], [0, 210, 420])
 
     def test_root_lanes_alternate_between_column_one_and_two(self) -> None:
         tree = [

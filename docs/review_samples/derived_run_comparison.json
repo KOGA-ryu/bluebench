@@ -1,0 +1,29 @@
+{
+  "comparison_warnings": [],
+  "derive_version": "1",
+  "file_deltas": [
+    {
+      "file_path": "backend/scanner/python_parser/python_scanner.py",
+      "raw_ms_delta": -102.25999999999999
+    },
+    {
+      "file_path": "backend/core/graph_engine/graph_manager.py",
+      "raw_ms_delta": -28.459999999999997
+    },
+    {
+      "file_path": "backend/triage/static_summary.py",
+      "raw_ms_delta": -26.4
+    }
+  ],
+  "runtime_delta_ms": -1970.37,
+  "schema_compatible": true,
+  "schema_versions": {
+    "baseline": "1",
+    "current": "1"
+  },
+  "stage_deltas": {
+    "context_build": -977.9799999999999,
+    "triage_generate": -992.3700000000001
+  },
+  "trace_overhead_delta_ms": -112.95999999999998
+}

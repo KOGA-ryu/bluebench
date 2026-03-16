@@ -1,0 +1,200 @@
+{
+  "display_run": {
+    "files": [
+      {
+        "call_count": 28141,
+        "file_path": "backend/scanner/python_parser/python_scanner.py",
+        "normalized_compute_score": null,
+        "raw_ms": 274.31,
+        "rolling_score": 91.4
+      },
+      {
+        "call_count": 1550,
+        "file_path": "backend/core/graph_engine/graph_manager.py",
+        "normalized_compute_score": null,
+        "raw_ms": 23.84,
+        "rolling_score": 12.9
+      },
+      {
+        "call_count": 801,
+        "file_path": "backend/triage/static_summary.py",
+        "normalized_compute_score": null,
+        "raw_ms": 22.4,
+        "rolling_score": 11.8
+      }
+    ],
+    "hardware_profile": "mini_pc_n100_16gb",
+    "measured": {
+      "runtime_ms": 1615.02,
+      "trace_overhead_ms": 256.22
+    },
+    "project_root": "/tmp/sample-project-root",
+    "quality": "strong",
+    "run_id": "sample-run-b",
+    "run_name": "sample-run-b",
+    "scenario_kind": "custom_script",
+    "schema_version": "1",
+    "stages": {
+      "context_build": 796.88,
+      "triage_generate": 797.28
+    },
+    "status": "completed",
+    "timestamp": "2026-03-16T12:00:00+00:00"
+  },
+  "selected_run": {
+    "files": [
+      {
+        "call_count": 28141,
+        "file_path": "backend/scanner/python_parser/python_scanner.py",
+        "normalized_compute_score": null,
+        "raw_ms": 274.31,
+        "rolling_score": 91.4
+      },
+      {
+        "call_count": 1550,
+        "file_path": "backend/core/graph_engine/graph_manager.py",
+        "normalized_compute_score": null,
+        "raw_ms": 23.84,
+        "rolling_score": 12.9
+      },
+      {
+        "call_count": 801,
+        "file_path": "backend/triage/static_summary.py",
+        "normalized_compute_score": null,
+        "raw_ms": 22.4,
+        "rolling_score": 11.8
+      }
+    ],
+    "hardware_profile": "mini_pc_n100_16gb",
+    "measured": {
+      "runtime_ms": 1615.02,
+      "trace_overhead_ms": 256.22
+    },
+    "project_root": "/tmp/sample-project-root",
+    "quality": "strong",
+    "run_id": "sample-run-b",
+    "run_name": "sample-run-b",
+    "scenario_kind": "custom_script",
+    "schema_version": "1",
+    "stages": {
+      "context_build": 796.88,
+      "triage_generate": 797.28
+    },
+    "status": "completed",
+    "timestamp": "2026-03-16T12:00:00+00:00"
+  },
+  "summary": {
+    "comparison": {
+      "comparison_warnings": [],
+      "derive_version": "1",
+      "file_deltas": [
+        {
+          "file_path": "backend/scanner/python_parser/python_scanner.py",
+          "raw_ms_delta": -102.25999999999999
+        },
+        {
+          "file_path": "backend/core/graph_engine/graph_manager.py",
+          "raw_ms_delta": 23.84
+        },
+        {
+          "file_path": "backend/triage/static_summary.py",
+          "raw_ms_delta": 22.4
+        }
+      ],
+      "runtime_delta_ms": 1615.02,
+      "schema_compatible": true,
+      "schema_versions": {
+        "baseline": "1",
+        "current": "1"
+      },
+      "stage_deltas": {
+        "context_build": 796.88,
+        "triage_generate": 797.28
+      },
+      "trace_overhead_delta_ms": 256.22
+    },
+    "derive_version": "1",
+    "evidence_types": {
+      "derived": [
+        {
+          "key": "derive_version",
+          "type": "derived",
+          "value": "1"
+        },
+        {
+          "key": "hotspot_count",
+          "type": "derived",
+          "value": 3
+        },
+        {
+          "key": "runtime_delta_ms",
+          "type": "derived",
+          "value": 1615.02
+        }
+      ],
+      "inferred": [],
+      "measured": [
+        {
+          "key": "schema_version",
+          "type": "measured",
+          "value": "1"
+        },
+        {
+          "key": "run_id",
+          "type": "measured",
+          "value": "sample-run-b"
+        },
+        {
+          "key": "runtime_ms",
+          "type": "measured",
+          "value": 1615.02
+        },
+        {
+          "key": "trace_overhead_ms",
+          "type": "measured",
+          "value": 256.22
+        }
+      ],
+      "missing": []
+    },
+    "hotspots": [
+      {
+        "call_count": 28141,
+        "file_path": "backend/scanner/python_parser/python_scanner.py",
+        "normalized_compute_score": null,
+        "raw_ms": 274.31,
+        "rolling_score": 91.4
+      },
+      {
+        "call_count": 1550,
+        "file_path": "backend/core/graph_engine/graph_manager.py",
+        "normalized_compute_score": null,
+        "raw_ms": 23.84,
+        "rolling_score": 12.9
+      },
+      {
+        "call_count": 801,
+        "file_path": "backend/triage/static_summary.py",
+        "normalized_compute_score": null,
+        "raw_ms": 22.4,
+        "rolling_score": 11.8
+      }
+    ],
+    "measured": {
+      "runtime_ms": 1615.02,
+      "trace_overhead_ms": 256.22
+    },
+    "run": {
+      "quality": "strong",
+      "run_id": "sample-run-b",
+      "run_name": "sample-run-b",
+      "status": "completed"
+    },
+    "schema_version": "1",
+    "summary_lines": [
+      "Run: sample-run-b",
+      "Top hotspot: backend/scanner/python_parser/python_scanner.py (274.31 ms)",
+      "Runtime delta: +1615.02 ms"
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -15,6 +16,61 @@ def traced_factorial(value: int) -> int:
     if value <= 1:
         return 1
     return value * traced_factorial(value - 1)
+
+
+class _TrackedConnection:
+    def __init__(self, connection: sqlite3.Connection, owner: "_TrackedStorage") -> None:
+        self._connection = connection
+        self._owner = owner
+        self._closed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def __enter__(self):
+        return self._connection.__enter__()
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._connection.__exit__(exc_type, exc, tb)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._owner.close_count += 1
+        self._connection.close()
+
+
+class _TrackedStorage(InstrumentationStorage):
+    def __init__(self, database_path: str | Path) -> None:
+        super().__init__(database_path)
+        self.open_count = 0
+        self.close_count = 0
+
+    def _connect(self) -> sqlite3.Connection:
+        self.open_count += 1
+        connection = super()._connect()
+        return _TrackedConnection(connection, self)
+
+    def insert_run_then_fail(self, run_row: dict[str, object]) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO runs
+                (run_id, run_name, project_root, scenario_kind, hardware_profile, started_at, finished_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_row["run_id"],
+                    run_row["run_name"],
+                    str(Path(run_row["project_root"]).resolve()) if run_row.get("project_root") else None,
+                    run_row["scenario_kind"],
+                    run_row["hardware_profile"],
+                    run_row["started_at"],
+                    run_row.get("finished_at"),
+                    run_row["status"],
+                ),
+            )
+            raise RuntimeError("boom")
 
 
 class InstrumentationTests(unittest.TestCase):
@@ -142,6 +198,53 @@ class InstrumentationTests(unittest.TestCase):
                 [row["symbol_key"] for row in storage.fetch_function_summaries_for_file(run_id, "pkg/a.py")],
                 ["pkg/a.py::run"],
             )
+
+    def test_storage_repeated_operations_close_connections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir)
+            storage = _TrackedStorage(project_root / "instrumentation.sqlite3")
+            storage.initialize_schema()
+
+            for index in range(50):
+                run_id = f"run-{index}"
+                storage.insert_run(
+                    {
+                        "run_id": run_id,
+                        "run_name": run_id,
+                        "project_root": str(project_root),
+                        "scenario_kind": "stress",
+                        "hardware_profile": "local",
+                        "started_at": "2026-03-14T00:00:00+00:00",
+                        "finished_at": "2026-03-14T00:00:10+00:00",
+                        "status": "completed",
+                    }
+                )
+                self.assertIsNotNone(storage.fetch_run(run_id))
+                self.assertEqual(len(storage.list_completed_runs(project_root=project_root)), index + 1)
+
+            self.assertEqual(storage.open_count, storage.close_count)
+
+    def test_storage_connection_rolls_back_and_closes_on_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            project_root = Path(tmp_dir)
+            storage = _TrackedStorage(project_root / "instrumentation.sqlite3")
+            storage.initialize_schema()
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                storage.insert_run_then_fail(
+                    {
+                        "run_id": "run-error",
+                        "run_name": "run-error",
+                        "project_root": str(project_root),
+                        "scenario_kind": "stress",
+                        "hardware_profile": "local",
+                        "started_at": "2026-03-14T00:00:00+00:00",
+                        "finished_at": "2026-03-14T00:00:10+00:00",
+                        "status": "completed",
+                    }
+                )
+
+            self.assertIsNone(storage.fetch_run("run-error"))
+            self.assertEqual(storage.open_count, storage.close_count)
 
 
 if __name__ == "__main__":

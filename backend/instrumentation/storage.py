@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import sqlite3
@@ -152,7 +153,7 @@ class InstrumentationStorage:
 
     def initialize_schema(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(SCHEMA_SQL)
             columns = {
                 str(row["name"])
@@ -167,7 +168,7 @@ class InstrumentationStorage:
         return report_path
 
     def insert_run(self, run_row: dict[str, object]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO runs
@@ -187,7 +188,7 @@ class InstrumentationStorage:
             )
 
     def insert_function_rows(self, run_id: str, rows: list[dict[str, object]]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO function_run_raw
@@ -215,7 +216,7 @@ class InstrumentationStorage:
             )
 
     def insert_resource_samples(self, run_id: str, rows: list[dict[str, object]]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executemany(
                 """
                 INSERT INTO resource_samples
@@ -236,7 +237,7 @@ class InstrumentationStorage:
             )
 
     def insert_external_bucket_rows(self, run_id: str, rows: list[dict[str, object]]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO external_bucket_raw
@@ -255,7 +256,7 @@ class InstrumentationStorage:
             )
 
     def insert_live_file_rows(self, run_id: str, rows: list[dict[str, object]]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO live_file_raw
@@ -275,7 +276,7 @@ class InstrumentationStorage:
             )
 
     def replace_live_file_rows(self, run_id: str, rows: list[dict[str, object]]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("DELETE FROM live_file_raw WHERE run_id = ?", (run_id,))
             connection.executemany(
                 """
@@ -296,7 +297,7 @@ class InstrumentationStorage:
             )
 
     def upsert_live_run_state(self, row: dict[str, object]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO live_run_state
@@ -324,11 +325,11 @@ class InstrumentationStorage:
             )
 
     def fetch_live_run_state(self, run_id: str) -> sqlite3.Row | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute("SELECT * FROM live_run_state WHERE run_id = ?", (run_id,)).fetchone()
 
     def fetch_run(self, run_id: str) -> sqlite3.Row | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
 
     def run_exists(self, run_id: str) -> bool:
@@ -336,7 +337,7 @@ class InstrumentationStorage:
 
     def list_completed_runs(self, limit: int = 100, project_root: str | Path | None = None) -> list[sqlite3.Row]:
         normalized_project_root = str(Path(project_root).resolve()) if project_root else None
-        with self._connect() as connection:
+        with self._connection() as connection:
             if normalized_project_root is None:
                 return connection.execute(
                     """
@@ -358,7 +359,7 @@ class InstrumentationStorage:
             ).fetchall()
 
     def fetch_latest_run_id_by_name(self, run_name: str) -> str | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT run_id FROM runs WHERE run_name = ? ORDER BY started_at DESC LIMIT 1",
                 (run_name,),
@@ -366,27 +367,27 @@ class InstrumentationStorage:
         return str(row["run_id"]) if row is not None else None
 
     def fetch_function_rows(self, run_id: str) -> list[sqlite3.Row]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute("SELECT * FROM function_run_raw WHERE run_id = ?", (run_id,)).fetchall()
 
     def fetch_resource_samples(self, run_id: str) -> list[sqlite3.Row]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute("SELECT * FROM resource_samples WHERE run_id = ?", (run_id,)).fetchall()
 
     def fetch_external_bucket_rows(self, run_id: str) -> list[sqlite3.Row]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute("SELECT * FROM external_bucket_raw WHERE run_id = ?", (run_id,)).fetchall()
 
     def fetch_live_file_rows(self, run_id: str) -> list[sqlite3.Row]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute("SELECT * FROM live_file_raw WHERE run_id = ?", (run_id,)).fetchall()
 
     def fetch_run_summary(self, run_id: str) -> sqlite3.Row | None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute("SELECT * FROM run_summary WHERE run_id = ?", (run_id,)).fetchone()
 
     def fetch_file_summaries(self, run_id: str, limit: int | None = 10) -> list[sqlite3.Row]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             if limit is None:
                 return connection.execute(
                     """
@@ -408,7 +409,7 @@ class InstrumentationStorage:
 
     def fetch_file_summary(self, run_id: str, file_path: str) -> sqlite3.Row | None:
         normalized = Path(file_path).as_posix()
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute(
                 "SELECT * FROM file_summary WHERE run_id = ? AND file_path = ?",
                 (run_id, normalized),
@@ -416,7 +417,7 @@ class InstrumentationStorage:
 
     def fetch_function_summaries_for_file(self, run_id: str, file_path: str) -> list[sqlite3.Row]:
         normalized = Path(file_path).as_posix()
-        with self._connect() as connection:
+        with self._connection() as connection:
             return connection.execute(
                 """
                 SELECT * FROM function_summary
@@ -427,7 +428,7 @@ class InstrumentationStorage:
             ).fetchall()
 
     def fetch_function_summary_count(self, run_id: str) -> int:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT COUNT(*) AS count FROM function_summary WHERE run_id = ?",
                 (run_id,),
@@ -442,7 +443,7 @@ class InstrumentationStorage:
         project_root: str | Path | None = None,
     ) -> str | None:
         normalized_project_root = str(Path(project_root).resolve()) if project_root else None
-        with self._connect() as connection:
+        with self._connection() as connection:
             if normalized_project_root is None:
                 row = connection.execute(
                     """
@@ -466,7 +467,7 @@ class InstrumentationStorage:
         return str(row["run_id"]) if row is not None else None
 
     def fetch_file_summary_map(self, run_id: str) -> dict[str, float]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT file_path, normalized_compute_score FROM file_summary WHERE run_id = ?",
                 (run_id,),
@@ -480,7 +481,7 @@ class InstrumentationStorage:
         function_rows: list[dict[str, object]],
         file_rows: list[dict[str, object]],
     ) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("DELETE FROM run_summary_stage WHERE run_id = ?", (run_id,))
             connection.execute("DELETE FROM function_summary_stage WHERE run_id = ?", (run_id,))
             connection.execute("DELETE FROM file_summary_stage WHERE run_id = ?", (run_id,))
@@ -575,3 +576,12 @@ class InstrumentationStorage:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    @contextmanager
+    def _connection(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.adapters.codex.context_pack import build_codex_context_pack
+from backend.history.history_summary import summarize_experiment_history
 from backend.instrumentation.storage import InstrumentationStorage
 from backend.triage.service import generate_triage
 
@@ -152,6 +153,19 @@ def build_context_pack(
             compact_actions=compact_actions,
         )),
     }
+
+    top_target = ""
+    hotspots = list(codex_summary.get("hotspots") or [])
+    if hotspots:
+        top_target = str(hotspots[0].get("file_path") or "")
+    if top_target:
+        history_summary = summarize_experiment_history(resolved_project_root, target=top_target)
+        summaries = list(history_summary.get("summaries") or [])
+        if summaries:
+            context["experiment_history"] = {
+                "target": top_target,
+                "summaries": summaries[:3],
+            }
 
     if mode == "full":
         context["triage"] = triage
